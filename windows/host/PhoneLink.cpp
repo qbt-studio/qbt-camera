@@ -126,24 +126,31 @@ std::wstring Widen(const std::string& text) {
 
 } // namespace
 
-bool PhoneLink::Connect(const std::atomic<bool>& stop, std::wstring& route) {
+bool PhoneLink::Connect(const std::atomic<bool>& stop, std::wstring& route, bool& usb) {
+    usb = false;
     for (const UsbDevice& device : UsbmuxListDevices()) {
         SOCKET s = UsbmuxConnect(device.id, qbt::kVideoPort);
         if (s != INVALID_SOCKET) {
             qbt::Log("link: USB device %d (%s)", device.id, device.serial.c_str());
             Adopt(s);
             route = L"USB";
+            usb = true;
             return true;
         }
     }
     if (stop) return false;
 
-    if (!lastWifiAddress_.empty()) {
-        SOCKET s = ConnectWithTimeout(lastWifiAddress_, 800);
+    std::string remembered;
+    {
+        std::lock_guard lock(addressMutex_);
+        remembered = lastWifiAddress_;
+    }
+    if (!remembered.empty()) {
+        SOCKET s = ConnectWithTimeout(remembered, 800);
         if (s != INVALID_SOCKET) {
-            qbt::Log("link: Wi-Fi %s (remembered)", lastWifiAddress_.c_str());
+            qbt::Log("link: Wi-Fi %s (remembered)", remembered.c_str());
             Adopt(s);
-            route = L"Wi-Fi " + Widen(lastWifiAddress_);
+            route = L"Wi-Fi " + Widen(remembered);
             return true;
         }
     }
@@ -154,10 +161,15 @@ bool PhoneLink::Connect(const std::atomic<bool>& stop, std::wstring& route) {
     SOCKET s = ConnectWithTimeout(found, 1000);
     if (s == INVALID_SOCKET) return false;
     qbt::Log("link: Wi-Fi %s (found by scan)", found.c_str());
-    lastWifiAddress_ = found;
+    RememberWifiAddress(found);
     Adopt(s);
     route = L"Wi-Fi " + Widen(found);
     return true;
+}
+
+void PhoneLink::RememberWifiAddress(const std::string& address) {
+    std::lock_guard lock(addressMutex_);
+    lastWifiAddress_ = address;
 }
 
 void PhoneLink::Adopt(SOCKET s) {

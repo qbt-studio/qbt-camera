@@ -19,6 +19,8 @@
 #include "Decoder.h"
 #include "PhoneLink.h"
 #include "SharedFrameWriter.h"
+#include "Shell.h"
+#include "Usbmux.h"
 #include "VideoPipeline.h"
 #include "VirtualCamera.h"
 
@@ -31,14 +33,28 @@ namespace {
 constexpr UINT kStatusMessage = WM_APP + 1;
 constexpr UINT kPhoneMessage = WM_APP + 2;   // lParam: std::string* with JSON from the phone
 constexpr UINT kDisconnectedMessage = WM_APP + 3;
+constexpr UINT kTrayMessage = WM_APP + 4;
 constexpr wchar_t kWindowClass[] = L"QBTCameraHostWindow";
 constexpr wchar_t kPreviewClass[] = L"QBTCameraPreview";
+constexpr wchar_t kSingleInstanceMutex[] = L"Local\\QBTCameraHostSingleInstance";
 constexpr UINT_PTR kMeterTimer = 1;
 constexpr UINT_PTR kDevicesTimer = 2;
+constexpr UINT kMenuOpen = 1, kMenuAutostart = 2, kMenuExit = 3;
+// After a failed USB attempt (e.g. this PC isn't trusted yet), stay on Wi-Fi this long.
+constexpr ULONGLONG kUsbRetryDelayMs = 30'000;
 
 struct App {
     HWND window = nullptr;
     HWND preview = nullptr;
+    HICON icon = nullptr;
+    HICON smallIcon = nullptr;
+    shell::TrayIcon tray;
+    UINT taskbarCreatedMessage = 0;
+    UINT showWindowMessage = 0; // sent by a second QBTCamera.exe instead of starting twice
+    bool exiting = false;
+    bool trayHintShown = false;
+    std::atomic<bool> usbPresent{false};
+    std::thread usbWatcher;
     ControlPanel panel;
     VideoPipeline pipeline;
     PhoneLink link;
@@ -86,14 +102,18 @@ void StreamLoop() {
 
     qbt::PacketHeader header{};
     std::vector<uint8_t> payload;
+    ULONGLONG usbRetryAfter = 0;
     while (!app.stop) {
         app.pipeline.Present(nullptr);
         SetStatus(L"Поиск iPhone по USB и Wi-Fi…\nОткройте QBT Camera на телефоне.\n" + CameraState(false));
         std::wstring route;
-        if (!app.link.Connect(app.stop, route)) {
+        bool usb = false;
+        if (!app.link.Connect(app.stop, route, usb)) {
             SleepUnlessStopped(1000);
             continue;
         }
+        // A cable is in but USB didn't work (PC not trusted yet, app just restarting): don't flap.
+        if (!usb && app.usbPresent) usbRetryAfter = GetTickCount64() + kUsbRetryDelayMs;
         decoder.Flush();
         SetStatus(L"Подключено: " + route);
 
@@ -103,6 +123,10 @@ void StreamLoop() {
         ULONGLONG windowStart = GetTickCount64();
         LONG width = 0, height = 0;
         while (!app.stop && app.link.ReadPacket(header, payload)) {
+            if (!usb && app.usbPresent && GetTickCount64() >= usbRetryAfter) {
+                qbt::Log("link: cable connected, switching to USB");
+                break; // reconnect: Connect() tries USB first
+            }
             bytes += sizeof(header) + payload.size();
             if (header.type == qbt::kPacketTypeMessage) {
                 PostMessageW(app.window, kPhoneMessage, 0,
@@ -175,6 +199,7 @@ void HandlePhoneMessage(const std::string& json) {
     const std::string event = message.String("evt");
     if (event == "caps") {
         qbt::Log("phone: capabilities %s", json.c_str());
+        if (const std::string wifi = message.String("wifi"); !wifi.empty()) g_app->link.RememberWifiAddress(wifi);
         g_app->panel.OnCapabilities(message);
     } else if (event == "state") {
         g_app->panel.OnState(message);
@@ -239,8 +264,53 @@ LRESULT CALLBACK PreviewProc(HWND window, UINT message, WPARAM wParam, LPARAM lP
     return DefWindowProcW(window, message, wParam, lParam);
 }
 
+void ShowMainWindow() {
+    ShowWindow(g_app->window, IsIconic(g_app->window) ? SW_RESTORE : SW_SHOW);
+    SetForegroundWindow(g_app->window);
+}
+
+void ShowTrayMenu(HWND window) {
+    HMENU menu = CreatePopupMenu();
+    AppendMenuW(menu, MF_STRING | MF_DEFAULT, kMenuOpen, L"Открыть QBT Camera");
+    AppendMenuW(menu, MF_STRING | (shell::IsAutostartEnabled() ? MF_CHECKED : 0), kMenuAutostart,
+                L"Запускать вместе с Windows");
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(menu, MF_STRING, kMenuExit, L"Выход");
+    POINT cursor;
+    GetCursorPos(&cursor);
+    SetForegroundWindow(window); // so the menu closes when clicking elsewhere
+    const UINT choice = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_NONOTIFY, cursor.x, cursor.y, 0, window, nullptr);
+    DestroyMenu(menu);
+    switch (choice) {
+    case kMenuOpen:
+        ShowMainWindow();
+        break;
+    case kMenuAutostart:
+        shell::SetAutostart(!shell::IsAutostartEnabled());
+        break;
+    case kMenuExit:
+        g_app->exiting = true;
+        PostMessageW(window, WM_CLOSE, 0, 0);
+        break;
+    default:
+        break;
+    }
+}
+
 LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
+    if (g_app && message == g_app->showWindowMessage && message != 0) {
+        ShowMainWindow();
+        return 0;
+    }
+    if (g_app && message == g_app->taskbarCreatedMessage && message != 0) {
+        g_app->tray.Restore();
+        return 0;
+    }
     switch (message) {
+    case kTrayMessage:
+        if (lParam == WM_LBUTTONUP || lParam == WM_LBUTTONDBLCLK) ShowMainWindow();
+        if (lParam == WM_RBUTTONUP || lParam == WM_CONTEXTMENU) ShowTrayMenu(window);
+        return 0;
     case WM_SIZE:
         if (g_app && g_app->preview) LayoutChildren(window);
         return 0;
@@ -263,6 +333,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             status = g_app->status;
         }
         g_app->panel.SetStatus(status);
+        g_app->tray.SetTip((L"QBT Camera — " + status.substr(0, status.find(L'\n'))).c_str());
         return 0;
     }
     case kPhoneMessage: {
@@ -278,10 +349,22 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         if (wParam == kDevicesTimer) RefreshAudioDevices(false);
         return 0;
     case WM_CLOSE:
+        if (!g_app->exiting) {
+            // Like Camo: closing the window keeps the camera working from the tray.
+            ShowWindow(window, SW_HIDE);
+            if (!g_app->trayHintShown) {
+                g_app->trayHintShown = true;
+                g_app->tray.ShowBalloon(L"QBT Camera работает в фоне",
+                                        L"Камера доступна в приложениях. Откройте окно или выйдите через значок в трее.");
+            }
+            return 0;
+        }
         g_app->stop = true;
         g_app->link.Close();
         if (g_app->worker.joinable()) g_app->worker.join();
+        if (g_app->usbWatcher.joinable()) g_app->usbWatcher.join();
         g_app->audio.Stop();
+        g_app->tray.Remove();
         DestroyWindow(window);
         return 0;
     case WM_DESTROY:
@@ -306,25 +389,50 @@ std::wstring SettingsFolder() {
 
 } // namespace
 
-int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
+int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int showCommand) {
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     MFStartup(MF_VERSION);
+
+    // Installer modes (run elevated by windows/install_camera.ps1).
+    const std::wstring arguments = commandLine ? commandLine : L"";
+    if (arguments.find(L"--install-camera") != std::wstring::npos ||
+        arguments.find(L"--uninstall-camera") != std::wstring::npos) {
+        const bool install = arguments.find(L"--install-camera") != std::wstring::npos;
+        const HRESULT hr = install ? VirtualCamera::InstallSystemCamera() : VirtualCamera::UninstallSystemCamera();
+        MFShutdown();
+        CoUninitialize();
+        return SUCCEEDED(hr) ? 0 : static_cast<int>(hr);
+    }
+
+    // One QBT Camera at a time: a second launch just brings the running one to the front.
+    const UINT showWindowMessage = RegisterWindowMessageW(L"QBTCameraShowWindow");
+    HANDLE singleInstance = CreateMutexW(nullptr, TRUE, kSingleInstanceMutex);
+    if (GetLastError() == ERROR_ALREADY_EXISTS) {
+        if (HWND running = FindWindowW(kWindowClass, nullptr)) PostMessageW(running, showWindowMessage, 0, 0);
+        return 0;
+    }
+    const bool startMinimized = arguments.find(L"--minimized") != std::wstring::npos;
     WSADATA wsa;
     WSAStartup(MAKEWORD(2, 2), &wsa);
     INITCOMMONCONTROLSEX controls{sizeof(controls), ICC_BAR_CLASSES | ICC_STANDARD_CLASSES};
     InitCommonControlsEx(&controls);
     App app;
     g_app = &app;
+    app.showWindowMessage = showWindowMessage;
+    app.taskbarCreatedMessage = RegisterWindowMessageW(L"TaskbarCreated");
     app.settingsFolder = SettingsFolder();
     qbt::SetLogFile(app.settingsFolder + L"\\host.log");
     qbt::Log("QBT Camera started");
+    app.icon = shell::MakeLogoIcon(GetSystemMetrics(SM_CXICON) * 2);
+    app.smallIcon = shell::MakeLogoIcon(GetSystemMetrics(SM_CXSMICON) * 2);
 
     WNDCLASSEXW windowClass{sizeof(windowClass)};
     windowClass.lpfnWndProc = WindowProc;
     windowClass.hInstance = instance;
     windowClass.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-    windowClass.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
+    windowClass.hIcon = app.icon;
+    windowClass.hIconSm = app.smallIcon;
     windowClass.lpszClassName = kWindowClass;
     RegisterClassExW(&windowClass);
 
@@ -365,8 +473,16 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
     }
 
     app.virtualCameraReady = SUCCEEDED(app.virtualCamera.Start());
+    app.tray.Add(app.window, kTrayMessage, app.smallIcon, L"QBT Camera");
+    // Cheap localhost query: notices a plugged-in cable within ~1.5 s.
+    app.usbWatcher = std::thread([] {
+        while (!g_app->stop) {
+            g_app->usbPresent = !UsbmuxListDevices().empty();
+            SleepUnlessStopped(1500);
+        }
+    });
     app.worker = std::thread(StreamLoop);
-    ShowWindow(app.window, showCommand);
+    if (!startMinimized) ShowWindow(app.window, showCommand);
 
     MSG message;
     while (GetMessageW(&message, nullptr, 0, 0) > 0) {
@@ -379,5 +495,6 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
     WSACleanup();
     MFShutdown();
     CoUninitialize();
+    if (singleInstance) CloseHandle(singleInstance);
     return 0;
 }

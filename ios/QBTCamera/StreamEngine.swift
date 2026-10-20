@@ -132,6 +132,8 @@ final class StreamEngine: ObservableObject {
         var caps = CameraControl.capabilities(of: device, lens: lens)
         caps["filters"] = ColorFilter.allCases.map(\.rawValue).joined(separator: ",")
         caps["microphone"] = AVCaptureDevice.default(for: .audio) != nil
+        // Lets the PC fall back to Wi-Fi instantly when the cable is pulled, without scanning the network.
+        caps["wifi"] = NetworkInfo.wifiAddress() ?? ""
         return caps
     }
 
@@ -173,6 +175,13 @@ final class StreamEngine: ObservableObject {
         stateTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.sendState() }
         }
+    }
+
+    /// Back in the foreground: iOS may have stopped the camera session or the listener meanwhile.
+    func resume() {
+        guard started else { return }
+        server.start()
+        camera.resume()
     }
 
     private func applyCameraSettings() {

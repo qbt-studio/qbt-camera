@@ -31,6 +31,7 @@ add_executable(QBTCamera WIN32
     host/Main.cpp
     host/PhoneLink.cpp
     host/SharedFrameWriter.cpp
+    host/Shell.cpp
     host/Usbmux.cpp
     host/VideoPipeline.cpp
     host/VirtualCamera.cpp)

@@ -116,6 +116,12 @@ final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         }
     }
 
+    func resume() {
+        sessionQueue.async { [self] in
+            if !session.isRunning && input != nil { session.startRunning() }
+        }
+    }
+
     @objc private func sessionRuntimeError() {
         sessionQueue.asyncAfter(deadline: .now() + 0.5) { [self] in
             if !session.isRunning { session.startRunning() }

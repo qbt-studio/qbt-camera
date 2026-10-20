@@ -15,6 +15,7 @@ import Foundation
 ///
 /// Message payload (type 2) is a UTF-8 JSON object: camera capabilities ("evt":"caps") or
 /// live state ("evt":"state"), see CameraControl.
+/// Audio payload (type 3) is 48 kHz mono signed 16-bit little-endian PCM from the microphone.
 ///
 /// PC → phone, each message starts with 8 bytes: UInt32 magic + UInt32 value.
 ///   'QBTK' ack:     value = total video frames received on this connection (wrapping);
@@ -33,6 +34,7 @@ enum QBTProtocol {
     enum PacketType: UInt8 {
         case video = 1
         case message = 2
+        case audio = 3
     }
 
     struct Flags: OptionSet {

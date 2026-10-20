@@ -7,12 +7,14 @@
 #include <mfapi.h>
 #include <shlobj.h>
 
+#include <algorithm>
 #include <atomic>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
 
+#include "AudioOutput.h"
 #include "ControlPanel.h"
 #include "Decoder.h"
 #include "PhoneLink.h"
@@ -31,6 +33,8 @@ constexpr UINT kPhoneMessage = WM_APP + 2;   // lParam: std::string* with JSON f
 constexpr UINT kDisconnectedMessage = WM_APP + 3;
 constexpr wchar_t kWindowClass[] = L"QBTCameraHostWindow";
 constexpr wchar_t kPreviewClass[] = L"QBTCameraPreview";
+constexpr UINT_PTR kMeterTimer = 1;
+constexpr UINT_PTR kDevicesTimer = 2;
 
 struct App {
     HWND window = nullptr;
@@ -38,6 +42,10 @@ struct App {
     ControlPanel panel;
     VideoPipeline pipeline;
     PhoneLink link;
+    AudioOutput audio;
+    std::vector<AudioOutput::Device> audioDevices;
+    std::wstring audioDevice;
+    std::wstring settingsFolder;
     SharedFrameWriter cameraOutput;
     VirtualCamera virtualCamera;
     bool virtualCameraReady = false;
@@ -101,6 +109,10 @@ void StreamLoop() {
                              reinterpret_cast<LPARAM>(new std::string(payload.begin(), payload.end())));
                 continue;
             }
+            if (header.type == qbt::kPacketTypeAudio) {
+                app.audio.Push(reinterpret_cast<const int16_t*>(payload.data()), payload.size() / sizeof(int16_t));
+                continue;
+            }
             if (header.type != qbt::kPacketTypeVideo) continue;
 
             DecodedFrame frame;
@@ -137,6 +149,7 @@ void StreamLoop() {
             }
         }
         app.link.Close();
+        app.audio.Flush();
         PostMessageW(app.window, kDisconnectedMessage, 0, 0);
         qbt::Log("stream ended");
     }
@@ -166,6 +179,59 @@ void HandlePhoneMessage(const std::string& json) {
     } else if (event == "state") {
         g_app->panel.OnState(message);
     }
+}
+
+// The chosen audio device is remembered in %LOCALAPPDATA%\QBTCamera\audio-device.txt;
+// "none" means the user chose not to play the sound anywhere.
+std::wstring AudioSettingPath() {
+    return g_app->settingsFolder + L"\\audio-device.txt";
+}
+
+bool LoadAudioSetting(std::wstring& deviceId) {
+    FILE* file = nullptr;
+    if (_wfopen_s(&file, AudioSettingPath().c_str(), L"r, ccs=UTF-8") != 0 || !file) return false;
+    wchar_t line[1024] = {};
+    const bool read = fgetws(line, 1024, file) != nullptr;
+    fclose(file);
+    if (!read) return false;
+    deviceId = line;
+    while (!deviceId.empty() && (deviceId.back() == L'\n' || deviceId.back() == L'\r')) deviceId.pop_back();
+    if (deviceId == L"none") deviceId.clear();
+    return true;
+}
+
+void SaveAudioSetting(const std::wstring& deviceId) {
+    FILE* file = nullptr;
+    if (_wfopen_s(&file, AudioSettingPath().c_str(), L"w, ccs=UTF-8") != 0 || !file) return;
+    fputws(deviceId.empty() ? L"none" : deviceId.c_str(), file);
+    fclose(file);
+}
+
+void SelectAudioDevice(const std::wstring& deviceId) {
+    g_app->audioDevice = deviceId;
+    g_app->audio.Start(deviceId);
+}
+
+/// Re-reads playback devices (VB-Cable may get installed while we run) and keeps the choice valid.
+void RefreshAudioDevices(bool firstTime) {
+    App& app = *g_app;
+    auto devices = AudioOutput::ListDevices();
+    if (!firstTime && devices == app.audioDevices) return;
+    app.audioDevices = std::move(devices);
+
+    std::wstring wanted;
+    const bool saved = LoadAudioSetting(wanted);
+    if (!saved || (!wanted.empty() && std::none_of(app.audioDevices.begin(), app.audioDevices.end(),
+                                                   [&](const auto& d) { return d.first == wanted; }))) {
+        // Default: VB-Audio Virtual Cable if present — it turns our sound into a microphone for calls.
+        // Never default to speakers: the call would hear itself.
+        wanted.clear();
+        for (const auto& [id, name] : app.audioDevices) {
+            if (name.find(L"CABLE Input") != std::wstring::npos) wanted = id;
+        }
+    }
+    if (firstTime || wanted != app.audioDevice) SelectAudioDevice(wanted);
+    app.panel.SetAudioDevices(app.audioDevices, app.audioDevice);
 }
 
 LRESULT CALLBACK PreviewProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
@@ -207,10 +273,15 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     case kDisconnectedMessage:
         g_app->panel.OnDisconnected();
         return 0;
+    case WM_TIMER:
+        if (wParam == kMeterTimer) g_app->panel.SetAudioLevel(g_app->audio.TakePeak());
+        if (wParam == kDevicesTimer) RefreshAudioDevices(false);
+        return 0;
     case WM_CLOSE:
         g_app->stop = true;
         g_app->link.Close();
         if (g_app->worker.joinable()) g_app->worker.join();
+        g_app->audio.Stop();
         DestroyWindow(window);
         return 0;
     case WM_DESTROY:
@@ -221,13 +292,13 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     }
 }
 
-std::wstring LogFilePath() {
+/// %LOCALAPPDATA%\QBTCamera: log and settings.
+std::wstring SettingsFolder() {
     PWSTR localAppData = nullptr;
     std::wstring path;
     if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &localAppData))) {
         path = std::wstring(localAppData) + L"\\QBTCamera";
         CreateDirectoryW(path.c_str(), nullptr);
-        path += L"\\host.log";
     }
     CoTaskMemFree(localAppData);
     return path;
@@ -243,11 +314,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
     WSAStartup(MAKEWORD(2, 2), &wsa);
     INITCOMMONCONTROLSEX controls{sizeof(controls), ICC_BAR_CLASSES | ICC_STANDARD_CLASSES};
     InitCommonControlsEx(&controls);
-    qbt::SetLogFile(LogFilePath());
-    qbt::Log("QBT Camera started");
-
     App app;
     g_app = &app;
+    app.settingsFolder = SettingsFolder();
+    qbt::SetLogFile(app.settingsFolder + L"\\host.log");
+    qbt::Log("QBT Camera started");
 
     WNDCLASSEXW windowClass{sizeof(windowClass)};
     windowClass.lpfnWndProc = WindowProc;
@@ -274,11 +345,20 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
     DwmSetWindowAttribute(app.window, DWMWA_USE_IMMERSIVE_DARK_MODE, &darkTitleBar, sizeof(darkTitleBar));
     app.preview = CreateWindowExW(0, kPreviewClass, L"", WS_CHILD | WS_VISIBLE, 0, 0, 100, 100, app.window, nullptr,
                                   instance, nullptr);
-    app.panel.Create(app.window, instance, [](const std::string& json) {
-        qbt::Log("command %s", json.c_str());
-        g_app->link.SendCommand(json);
-    });
+    app.panel.Create(
+        app.window, instance,
+        [](const std::string& json) {
+            qbt::Log("command %s", json.c_str());
+            g_app->link.SendCommand(json);
+        },
+        [](const std::wstring& deviceId) {
+            SaveAudioSetting(deviceId);
+            SelectAudioDevice(deviceId);
+        });
     LayoutChildren(app.window);
+    RefreshAudioDevices(true);
+    SetTimer(app.window, kMeterTimer, 50, nullptr);
+    SetTimer(app.window, kDevicesTimer, 3000, nullptr);
     if (!app.preview || FAILED(app.pipeline.Initialize(app.preview))) {
         MessageBoxW(nullptr, L"Не удалось инициализировать видеокарту (Direct3D 11).", L"QBT Camera", MB_ICONERROR);
         return 1;

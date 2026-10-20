@@ -38,6 +38,15 @@ final class StreamEngine: ObservableObject {
             camera.setOrientation(orientation)
         }
     }
+    /// Send the iPhone microphone to the PC.
+    @Published var audioEnabled: Bool {
+        didSet {
+            guard audioEnabled != oldValue else { return }
+            defaults.set(audioEnabled, forKey: Keys.audio)
+            applyAudio()
+        }
+    }
+    @Published private(set) var microphoneDenied = false
 
     private enum Keys {
         static let lens = "lens"
@@ -45,12 +54,14 @@ final class StreamEngine: ObservableObject {
         static let fps = "fps"
         static let orientation = "orientation"
         static let effects = "effects"
+        static let audio = "audio"
     }
 
     private let defaults = UserDefaults.standard
 
     let camera = CameraCapture()
     private let effects = VideoEffects()
+    private let resampler = AudioResampler()
     private let encoder = VideoEncoder()
     private let server = StreamServer(port: QBTProtocol.videoPort)
     private var statsTimer: Timer?
@@ -68,12 +79,14 @@ final class StreamEngine: ObservableObject {
             resolution: defaults.string(forKey: Keys.resolution).flatMap(StreamResolution.init(rawValue:)) ?? .fullHD,
             fps: StreamPreset.frameRates.contains(savedFPS) ? savedFPS : 30)
         orientation = defaults.string(forKey: Keys.orientation).flatMap(VideoOrientation.init(rawValue:)) ?? .auto
+        audioEnabled = defaults.object(forKey: Keys.audio) as? Bool ?? true
         if let saved = defaults.dictionary(forKey: Keys.effects) {
             effectSettings = Self.effectSettings(from: saved, base: EffectSettings())
             effects.update(effectSettings)
         }
 
         Self.connectPipeline(camera: camera, effects: effects, encoder: encoder, server: server)
+        Self.connectAudio(camera: camera, resampler: resampler, server: server)
         server.onClientChanged = { [weak self] name in
             Task { @MainActor in
                 self?.clientName = name
@@ -107,9 +120,18 @@ final class StreamEngine: ObservableObject {
         }
     }
 
+    private nonisolated static func connectAudio(camera: CameraCapture, resampler: AudioResampler, server: StreamServer) {
+        camera.onAudio = { sampleBuffer in
+            guard server.hasClient, let pcm = resampler.convert(sampleBuffer) else { return }
+            let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+            server.sendAudio(pcm, ptsMicros: pts.isValid ? UInt64(max(0, pts.seconds) * 1_000_000) : 0)
+        }
+    }
+
     private nonisolated static func capabilities(of device: AVCaptureDevice, lens: CameraLens) -> [String: Any] {
         var caps = CameraControl.capabilities(of: device, lens: lens)
         caps["filters"] = ColorFilter.allCases.map(\.rawValue).joined(separator: ",")
+        caps["microphone"] = AVCaptureDevice.default(for: .audio) != nil
         return caps
     }
 
@@ -140,6 +162,7 @@ final class StreamEngine: ObservableObject {
                     return
                 }
                 self.applyCameraSettings()
+                self.applyAudio()
                 self.server.start()
             }
         }
@@ -162,6 +185,22 @@ final class StreamEngine: ObservableObject {
         camera.start(lens: lens, preset: preset, orientation: orientation)
     }
 
+    private func applyAudio() {
+        guard started else { return }
+        guard audioEnabled else {
+            camera.setAudioEnabled(false)
+            return
+        }
+        AVCaptureDevice.requestAccess(for: .audio) { [weak self] granted in
+            Task { @MainActor in
+                guard let self, self.audioEnabled else { return }
+                self.microphoneDenied = !granted
+                self.camera.setAudioEnabled(granted)
+                self.sendState()
+            }
+        }
+    }
+
     private func handleCommand(_ data: Data) {
         guard let command = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
               let name = command["cmd"] as? String else { return }
@@ -170,6 +209,11 @@ final class StreamEngine: ObservableObject {
                CameraLens.available.contains(lens) {
                 self.lens = lens // reconfigures; capabilities follow via onConfigured
             }
+            return
+        }
+        if name == "audio" {
+            if let enabled = command["enabled"] as? Bool { audioEnabled = enabled }
+            sendState()
             return
         }
         if name == "effects" {
@@ -196,10 +240,14 @@ final class StreamEngine: ObservableObject {
         guard clientName != nil else { return }
         let server = server
         let effects = effects
+        let audioOn = audioEnabled && !microphoneDenied
+        let microphoneDenied = microphoneDenied
         camera.readDevice { device, lens in
             var state = CameraControl.state(of: device, lens: lens)
             state.merge(Self.dictionary(of: effects.current)) { _, effect in effect }
             state["effectsMs"] = effects.current.isActive ? effects.lastProcessingMillis : 0
+            state["audioEnabled"] = audioOn
+            state["microphoneDenied"] = microphoneDenied
             if let json = CameraControl.encode(state) {
                 server.sendMessage(json)
             }

@@ -9,25 +9,31 @@
 
 #include "Json.h"
 
-// Controls next to the preview, on two tabs. "Камера": lens buttons, exposure / white balance /
+// Controls next to the preview, on three tabs. "Камера": lens buttons, exposure / white balance /
 // focus with Auto toggles, zoom and torch. "Эффекты": background blur, retouch, face tracking and
-// color filters (rendered on the phone). Sliders follow the phone's live values; moving one
-// switches that group to manual and sends a command. Commands are coalesced to ~30 per second.
+// color filters (rendered on the phone). "Звук": iPhone microphone on/off, level meter and the
+// Windows device to play it on. Sliders follow the phone's live values; moving one switches that
+// group to manual and sends a command. Commands are coalesced to ~30 per second.
 class ControlPanel {
 public:
     using CommandSink = std::function<void(const std::string& json)>;
+    using DeviceSink = std::function<void(const std::wstring& deviceId)>; // empty id = don't play
+    using AudioDevice = std::pair<std::wstring, std::wstring>;             // id, friendly name
     static constexpr int kWidth = 340; // device-independent pixels
 
-    bool Create(HWND parent, HINSTANCE instance, CommandSink sink);
+    bool Create(HWND parent, HINSTANCE instance, CommandSink commands, DeviceSink audioDevice);
     HWND Handle() const { return panel_; }
 
     void OnCapabilities(const JsonObject& caps);
     void OnState(const JsonObject& state);
     void OnDisconnected();
     void SetStatus(const std::wstring& text);
+    void SetAudioDevices(const std::vector<AudioDevice>& devices, const std::wstring& selectedId);
+    void SetAudioLevel(float peak);
 
 private:
-    enum class Group { Lens, Exposure, Bias, WhiteBalance, Focus, Zoom, Torch, Effects, Count };
+    enum class Group { Lens, Exposure, Bias, WhiteBalance, Focus, Zoom, Torch, Effects, Audio, Count };
+    static constexpr int kMaxAudioDevices = 9; // plus "Не выводить"
 
     struct Slider {
         HWND caption = nullptr;
@@ -36,7 +42,7 @@ private:
     };
 
     struct Row {
-        enum Kind { Tabs, Header, Lenses, SliderRow, Filters, Info } kind;
+        enum Kind { Tabs, Header, Lenses, SliderRow, Filters, Info, Meter, Devices } kind;
         HWND label = nullptr;  // header or info text
         HWND toggle = nullptr; // optional toggle button in a header
         Slider slider;
@@ -70,6 +76,7 @@ private:
     void SendWhiteBalance();
     void SendFocus();
     void SendEffects();
+    void RefreshAudioInfo();
     void Queue(Group group, std::string json);
     void Flush();
     bool RecentlyTouched(Group group) const;
@@ -88,6 +95,7 @@ private:
 
     HWND panel_ = nullptr;
     CommandSink sink_;
+    DeviceSink deviceSink_;
     UINT dpi_ = 96;
     HFONT font_ = nullptr;
     HFONT headerFont_ = nullptr;
@@ -102,7 +110,14 @@ private:
     HWND whiteBalanceAuto_ = nullptr;
     HWND focusAuto_ = nullptr;
     Slider iso_, shutter_, bias_, kelvin_, tint_, focus_, zoom_, torch_;
-    HWND tabButtons_[2] = {};
+    HWND tabButtons_[3] = {};
+    HWND microphoneToggle_ = nullptr;
+    HWND meter_ = nullptr;
+    HWND deviceButtons_[kMaxAudioDevices + 1] = {};
+    std::vector<AudioDevice> devices_; // index 0 of deviceButtons_ is "Не выводить"
+    std::wstring selectedDevice_;
+    HWND audioInfo_ = nullptr;
+    float level_ = 0;
     Slider blur_, retouch_, filterAmount_;
     HWND framingToggle_ = nullptr;
     HWND filterButtons_[8] = {};
@@ -120,6 +135,7 @@ private:
     std::vector<double> shutterStops_;
     bool exposureIsAuto_ = true, whiteBalanceIsAuto_ = true, focusIsAuto_ = true;
     bool framingOn_ = false;
+    bool microphoneAvailable_ = false, microphoneOn_ = false, microphoneDenied_ = false;
     std::string filter_ = "none";
     double effectsMillis_ = 0;
 

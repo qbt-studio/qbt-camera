@@ -95,6 +95,17 @@ final class StreamServer {
         }
     }
 
+    /// Microphone PCM. Tiny compared to video (0.77 Mbit/s), so it bypasses the frame budget.
+    func sendAudio(_ pcm: Data, ptsMicros: UInt64) {
+        queue.async { [self] in
+            guard let connection else { return }
+            var packet = QBTProtocol.makeHeader(type: .audio, flags: [], payloadLength: pcm.count, ptsMicros: ptsMicros)
+            packet.append(pcm)
+            stats.bytes += packet.count
+            connection.send(content: packet, completion: .idempotent)
+        }
+    }
+
     /// Small JSON message to the PC (capabilities, state). Not subject to the frame budget.
     func sendMessage(_ json: Data) {
         queue.async { [self] in

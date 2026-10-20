@@ -127,6 +127,13 @@ struct ContentView: View {
                 }
             }
 
+            Toggle("Микрофон iPhone → компьютер", isOn: $engine.audioEnabled)
+            if engine.microphoneDenied {
+                Text("Нет доступа к микрофону. Разрешите его: Настройки → QBT Camera → Микрофон.")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+
             Toggle("Предпросмотр на телефоне", isOn: $showPreview)
         }
         .padding()

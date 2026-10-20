@@ -10,6 +10,7 @@ inline constexpr uint32_t kAckMagic = 0x4B544251;     // 'QBTK'
 inline constexpr uint32_t kCommandMagic = 0x43544251; // 'QBTC': followed by `value` bytes of JSON
 inline constexpr uint8_t kPacketTypeVideo = 1;
 inline constexpr uint8_t kPacketTypeMessage = 2;      // JSON: {"evt":"caps"|"state", ...}
+inline constexpr uint8_t kPacketTypeAudio = 3;        // 48 kHz mono int16 little-endian PCM
 inline constexpr uint8_t kFlagKeyframe = 1;
 inline constexpr uint32_t kMaxPacketBytes = 16 * 1024 * 1024;
 

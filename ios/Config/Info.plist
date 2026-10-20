@@ -4,6 +4,8 @@
 <dict>
 	<key>NSCameraUsageDescription</key>
 	<string>QBT Camera передаёт видео с камеры на ваш компьютер.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>QBT Camera передаёт звук с микрофона iPhone на ваш компьютер.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Нужно, чтобы компьютер мог подключиться к iPhone по Wi-Fi.</string>
 	<key>NSBonjourServices</key>

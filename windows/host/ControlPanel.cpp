@@ -26,6 +26,9 @@ constexpr int kExposureAutoId = 110;
 constexpr int kWhiteBalanceAutoId = 111;
 constexpr int kFocusAutoId = 112;
 constexpr int kFramingId = 113;
+constexpr int kMicrophoneId = 114;
+constexpr int kMeterId = 115;
+constexpr int kDeviceIdBase = 150;
 constexpr int kTabIdBase = 120;
 constexpr int kFilterIdBase = 130;
 constexpr UINT_PTR kFlushTimer = 1;
@@ -68,8 +71,9 @@ bool Contains(const std::vector<HWND>& list, HWND window) {
 
 } // namespace
 
-bool ControlPanel::Create(HWND parent, HINSTANCE instance, CommandSink sink) {
-    sink_ = std::move(sink);
+bool ControlPanel::Create(HWND parent, HINSTANCE instance, CommandSink commands, DeviceSink audioDevice) {
+    sink_ = std::move(commands);
+    deviceSink_ = std::move(audioDevice);
     background_ = CreateSolidBrush(kBackground);
 
     WNDCLASSEXW windowClass{sizeof(windowClass)};
@@ -213,7 +217,22 @@ void ControlPanel::AddSlider(const Slider& slider) {
 void ControlPanel::CreateControls(HINSTANCE) {
     tabButtons_[0] = MakeButton(L"Камера", kTabIdBase);
     tabButtons_[1] = MakeButton(L"Эффекты", kTabIdBase + 1);
+    tabButtons_[2] = MakeButton(L"Звук", kTabIdBase + 2);
     AddRow({Row::Tabs, nullptr, nullptr, {}});
+
+    // Tab 2: the iPhone microphone.
+    buildingTab_ = 2;
+    microphoneToggle_ = MakeButton(L"Выкл", kMicrophoneId);
+    AddHeader(L"МИКРОФОН IPHONE", microphoneToggle_);
+    meter_ = MakeButton(L"", kMeterId);
+    EnableWindow(meter_, FALSE); // display only
+    AddRow({Row::Meter, nullptr, nullptr, {}});
+    AddHeader(L"КУДА ВЫВОДИТЬ ЗВУК НА ПК");
+    deviceButtons_[0] = MakeButton(L"Не выводить", kDeviceIdBase);
+    for (int i = 1; i <= kMaxAudioDevices; ++i) deviceButtons_[i] = MakeButton(L"", kDeviceIdBase + i);
+    AddRow({Row::Devices, nullptr, nullptr, {}});
+    audioInfo_ = MakeLabel(L"", statusFont_);
+    AddRow({Row::Info, audioInfo_, nullptr, {}});
 
     // Tab 1: effects rendered on the phone.
     buildingTab_ = 1;
@@ -278,12 +297,22 @@ void ControlPanel::Layout() {
         switch (row.kind) {
         case Row::Tabs: {
             const int gap = Scale(6);
-            const int tabWidth = (width - gap) / 2;
-            MoveWindow(tabButtons_[0], margin, y + Scale(6), tabWidth, Scale(34), TRUE);
-            MoveWindow(tabButtons_[1], margin + tabWidth + gap, y + Scale(6), tabWidth, Scale(34), TRUE);
+            const int tabWidth = (width - gap * 2) / 3;
+            for (int i = 0; i < 3; ++i)
+                MoveWindow(tabButtons_[i], margin + i * (tabWidth + gap), y + Scale(6), tabWidth, Scale(34), TRUE);
             y += Scale(44);
             break;
         }
+        case Row::Meter:
+            MoveWindow(meter_, margin, y + Scale(2), width, Scale(14), TRUE);
+            y += Scale(22);
+            break;
+        case Row::Devices:
+            for (size_t i = 0; i <= devices_.size(); ++i) {
+                MoveWindow(deviceButtons_[i], margin, y, width, Scale(32), TRUE);
+                y += Scale(38);
+            }
+            break;
         case Row::Filters: {
             const int gap = Scale(6);
             const int buttonWidth = (width - gap * 3) / 4;
@@ -295,8 +324,8 @@ void ControlPanel::Layout() {
             break;
         }
         case Row::Info:
-            MoveWindow(row.label, margin, y + Scale(10), width, Scale(36), TRUE);
-            y += Scale(48);
+            MoveWindow(row.label, margin, y + Scale(10), width, Scale(54), TRUE);
+            y += Scale(66);
             break;
         case Row::Header:
             y += Scale(12);
@@ -347,6 +376,11 @@ void ControlPanel::ShowRow(const Row& row, bool show) {
         for (HWND button : filterButtons_) ShowWindow(button, command);
     } else if (row.kind == Row::Tabs) {
         for (HWND button : tabButtons_) ShowWindow(button, command);
+    } else if (row.kind == Row::Meter) {
+        ShowWindow(meter_, command);
+    } else if (row.kind == Row::Devices) {
+        for (size_t i = 0; i <= kMaxAudioDevices; ++i)
+            ShowWindow(deviceButtons_[i], show && i <= devices_.size() ? SW_SHOWNA : SW_HIDE);
     }
 }
 
@@ -400,6 +434,7 @@ void ControlPanel::OnCapabilities(const JsonObject& caps) {
     manualWhiteBalance_ = caps.Bool("manualWB");
     manualFocus_ = caps.Bool("manualFocus");
     hasTorch_ = caps.Bool("torch");
+    microphoneAvailable_ = caps.Bool("microphone");
 
     minIso_ = std::max(1.0, caps.Number("minISO", 50));
     maxIso_ = std::max(minIso_ + 1, caps.Number("maxISO", 3200));
@@ -454,6 +489,15 @@ void ControlPanel::OnState(const JsonObject& state) {
         filter_ = filter.empty() ? "none" : filter;
     }
     effectsMillis_ = state.Number("effectsMs");
+    if (!RecentlyTouched(Group::Audio) && state.Has("audioEnabled")) {
+        const bool on = state.Bool("audioEnabled");
+        const bool denied = state.Bool("microphoneDenied");
+        if (on != microphoneOn_ || denied != microphoneDenied_) {
+            microphoneOn_ = on;
+            microphoneDenied_ = denied;
+            RefreshAudioInfo();
+        }
+    }
     RefreshButtons();
     RefreshEnabled();
     RefreshValueTexts();
@@ -538,6 +582,7 @@ void ControlPanel::RefreshEnabled() {
     enable(filterAmount_, connected_ && filter_ != "none");
     EnableWindow(framingToggle_, connected_);
     for (HWND button : filterButtons_) EnableWindow(button, connected_);
+    EnableWindow(microphoneToggle_, connected_ && microphoneAvailable_);
 }
 
 void ControlPanel::RefreshButtons() {
@@ -545,6 +590,9 @@ void ControlPanel::RefreshButtons() {
     SetWindowTextW(whiteBalanceAuto_, whiteBalanceIsAuto_ ? L"Авто" : L"Ручной");
     SetWindowTextW(focusAuto_, focusIsAuto_ ? L"Авто" : L"Ручной");
     SetWindowTextW(framingToggle_, framingOn_ ? L"Вкл" : L"Выкл");
+    SetWindowTextW(microphoneToggle_, microphoneOn_ ? L"Вкл" : L"Выкл");
+    InvalidateRect(microphoneToggle_, nullptr, FALSE);
+    for (HWND button : deviceButtons_) InvalidateRect(button, nullptr, FALSE);
     for (HWND button : lensButtons_) InvalidateRect(button, nullptr, FALSE);
     for (HWND button : filterButtons_) InvalidateRect(button, nullptr, FALSE);
     for (HWND button : tabButtons_) InvalidateRect(button, nullptr, FALSE);
@@ -555,9 +603,13 @@ bool ControlPanel::ButtonActive(HWND button) const {
     for (int i = 0; i < 4; ++i) {
         if (button == lensButtons_[i]) return connected_ && lens_ == kLensNames[i];
     }
-    for (int i = 0; i < 2; ++i) {
+    for (int i = 0; i < 3; ++i) {
         if (button == tabButtons_[i]) return currentTab_ == i;
     }
+    for (size_t i = 0; i <= devices_.size() && i <= kMaxAudioDevices; ++i) {
+        if (button == deviceButtons_[i]) return (i == 0 ? std::wstring() : devices_[i - 1].first) == selectedDevice_;
+    }
+    if (button == microphoneToggle_) return microphoneOn_;
     for (int i = 0; i < 8; ++i) {
         if (button == filterButtons_[i]) return filter_ == kFilterNames[i];
     }
@@ -621,7 +673,23 @@ void ControlPanel::OnSliderMoved(HWND track) {
 }
 
 void ControlPanel::OnButton(int id) {
-    if (id >= kTabIdBase && id < kTabIdBase + 2) {
+    if (id >= kDeviceIdBase && id <= kDeviceIdBase + kMaxAudioDevices) {
+        const size_t index = static_cast<size_t>(id - kDeviceIdBase);
+        if (index > devices_.size()) return;
+        selectedDevice_ = index == 0 ? std::wstring() : devices_[index - 1].first;
+        if (deviceSink_) deviceSink_(selectedDevice_);
+        RefreshButtons();
+        RefreshAudioInfo();
+        return;
+    }
+    if (id == kMicrophoneId) {
+        microphoneOn_ = !microphoneOn_;
+        Queue(Group::Audio, Format(R"({"cmd":"audio","enabled":%s})", microphoneOn_ ? "true" : "false"));
+        RefreshButtons();
+        RefreshAudioInfo();
+        return;
+    }
+    if (id >= kTabIdBase && id < kTabIdBase + 3) {
         currentTab_ = id - kTabIdBase;
         Layout();
         RefreshButtons();
@@ -676,10 +744,58 @@ bool ControlPanel::RecentlyTouched(Group group) const {
     return GetTickCount64() - touched_[static_cast<int>(group)] < kTouchHoldMs;
 }
 
+void ControlPanel::SetAudioDevices(const std::vector<AudioDevice>& devices, const std::wstring& selectedId) {
+    devices_.assign(devices.begin(), devices.begin() + std::min<size_t>(devices.size(), kMaxAudioDevices));
+    selectedDevice_ = selectedId;
+    for (size_t i = 0; i < devices_.size(); ++i) SetWindowTextW(deviceButtons_[i + 1], devices_[i].second.c_str());
+    Layout();
+    RefreshButtons();
+    RefreshAudioInfo();
+}
+
+void ControlPanel::SetAudioLevel(float peak) {
+    // Fast attack, slow release, like a hardware meter.
+    const float next = peak > level_ ? peak : level_ * 0.85f;
+    if (std::abs(next - level_) < 0.002f) return;
+    level_ = next;
+    InvalidateRect(meter_, nullptr, FALSE);
+}
+
+void ControlPanel::RefreshAudioInfo() {
+    const auto isCable = [](const std::wstring& name) { return name.find(L"CABLE Input") != std::wstring::npos; };
+    const auto selected = std::find_if(devices_.begin(), devices_.end(), [&](const AudioDevice& d) { return d.first == selectedDevice_; });
+    const bool cableInstalled = std::any_of(devices_.begin(), devices_.end(), [&](const AudioDevice& d) { return isCable(d.second); });
+
+    std::wstring text;
+    if (microphoneDenied_) {
+        text = L"iPhone не дал доступ к микрофону: Настройки → QBT Camera → Микрофон.";
+    } else if (selected != devices_.end() && isCable(selected->second)) {
+        text = L"Готово: в Zoom, Discord или Teams выберите микрофон «CABLE Output (VB-Audio Virtual Cable)».";
+    } else if (!cableInstalled) {
+        text = L"Чтобы звук iPhone стал микрофоном в Zoom и Discord, установите бесплатный VB-Audio Virtual Cable "
+               L"(vb-audio.com/Cable) и выберите здесь «CABLE Input».";
+    } else if (selected == devices_.end()) {
+        text = L"Звук принимается, но никуда не выводится. Выберите «CABLE Input».";
+    } else {
+        text = L"Звук играет в «" + selected->second + L"» — это прослушка, не микрофон для звонков.";
+    }
+    SetWindowTextW(audioInfo_, text.c_str());
+}
+
 void ControlPanel::DrawButton(const DRAWITEMSTRUCT& item) {
     HDC dc = item.hDC;
     const RECT rect = item.rcItem;
     FillRect(dc, &rect, background_);
+    if (item.hwndItem == meter_) { // level meter: green, turning amber near clipping
+        const int half = (rect.bottom - rect.top) / 2;
+        FillRoundRect(dc, rect, kTrack, half * 2);
+        const int filled = static_cast<int>((rect.right - rect.left) * std::clamp(level_, 0.0f, 1.0f));
+        if (filled > half) {
+            const RECT bar{rect.left, rect.top, rect.left + filled, rect.bottom};
+            FillRoundRect(dc, bar, level_ > 0.8f ? RGB(255, 176, 32) : RGB(52, 199, 89), half * 2);
+        }
+        return;
+    }
     const bool enabled = !(item.itemState & ODS_DISABLED);
     const bool pressed = (item.itemState & ODS_SELECTED) != 0;
     const bool active = enabled && ButtonActive(item.hwndItem);
@@ -691,8 +807,8 @@ void ControlPanel::DrawButton(const DRAWITEMSTRUCT& item) {
     SetBkMode(dc, TRANSPARENT);
     SetTextColor(dc, !enabled ? kDisabledText : active ? RGB(255, 255, 255) : kText);
     HGDIOBJ oldFont = SelectObject(dc, font_);
-    RECT textRect = rect;
-    DrawTextW(dc, text, -1, &textRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+    RECT textRect{rect.left + Scale(8), rect.top, rect.right - Scale(8), rect.bottom};
+    DrawTextW(dc, text, -1, &textRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
     SelectObject(dc, oldFont);
 }
 

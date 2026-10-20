@@ -13,8 +13,9 @@ enum CaptureError: LocalizedError {
     }
 }
 
-/// Owns the AVCaptureSession and hands raw NV12 frames to `onFrame` with no extra copies.
-final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
+/// Owns the AVCaptureSession and hands raw NV12 frames to `onFrame` with no extra copies,
+/// and (when enabled) microphone audio to `onAudio`.
+final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptureAudioDataOutputSampleBufferDelegate {
     let session = AVCaptureSession()
 
     /// Called on the video queue for every captured frame.
@@ -22,11 +23,16 @@ final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     var onError: ((Error) -> Void)?
     /// Called on the session queue after every (re)configuration, e.g. to send capabilities to the PC.
     var onConfigured: ((AVCaptureDevice, CameraLens) -> Void)?
+    /// Microphone sample buffers (~20 ms each), called on the audio queue.
+    var onAudio: ((CMSampleBuffer) -> Void)?
 
     private let sessionQueue = DispatchQueue(label: "qbt.camera.session")
     private let videoQueue = DispatchQueue(label: "qbt.camera.video", qos: .userInteractive)
     private let output = AVCaptureVideoDataOutput()
     private var input: AVCaptureDeviceInput?
+    private let audioQueue = DispatchQueue(label: "qbt.camera.audio", qos: .userInteractive)
+    private let audioOutput = AVCaptureAudioDataOutput()
+    private var audioInput: AVCaptureDeviceInput?
     private var lens = CameraLens.wide
     private var orientation = VideoOrientation.auto
     private var rotationCoordinator: AVCaptureDevice.RotationCoordinator?
@@ -54,6 +60,29 @@ final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             }
             if !session.isRunning { session.startRunning() }
             if let device = input?.device { onConfigured?(device, lens) }
+        }
+    }
+
+    /// Adds or removes the microphone. Microphone permission must already be granted.
+    func setAudioEnabled(_ enabled: Bool) {
+        sessionQueue.async { [self] in
+            session.beginConfiguration()
+            defer { session.commitConfiguration() }
+            if enabled {
+                guard audioInput == nil,
+                      let microphone = AVCaptureDevice.default(for: .audio),
+                      let newInput = try? AVCaptureDeviceInput(device: microphone),
+                      session.canAddInput(newInput) else { return }
+                session.addInput(newInput)
+                audioInput = newInput
+                if !session.outputs.contains(audioOutput), session.canAddOutput(audioOutput) {
+                    audioOutput.setSampleBufferDelegate(self, queue: audioQueue)
+                    session.addOutput(audioOutput)
+                }
+            } else if let audioInput {
+                session.removeInput(audioInput)
+                self.audioInput = nil
+            }
         }
     }
 
@@ -174,6 +203,10 @@ final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     }
 
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
+        if output === audioOutput {
+            onAudio?(sampleBuffer)
+            return
+        }
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
         onFrame?(pixelBuffer, CMSampleBufferGetPresentationTimeStamp(sampleBuffer))
     }

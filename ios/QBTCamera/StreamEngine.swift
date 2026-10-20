@@ -14,6 +14,8 @@ final class StreamEngine: ObservableObject {
     @Published private(set) var targetBitrate = 0
     @Published private(set) var errorMessage: String?
     @Published private(set) var wifiAddress: String?
+    /// Effects chosen on the PC, shown on the phone for reference.
+    @Published private(set) var effectSettings = EffectSettings()
 
     @Published var lens: CameraLens {
         didSet {
@@ -42,11 +44,13 @@ final class StreamEngine: ObservableObject {
         static let resolution = "resolution"
         static let fps = "fps"
         static let orientation = "orientation"
+        static let effects = "effects"
     }
 
     private let defaults = UserDefaults.standard
 
     let camera = CameraCapture()
+    private let effects = VideoEffects()
     private let encoder = VideoEncoder()
     private let server = StreamServer(port: QBTProtocol.videoPort)
     private var statsTimer: Timer?
@@ -64,8 +68,12 @@ final class StreamEngine: ObservableObject {
             resolution: defaults.string(forKey: Keys.resolution).flatMap(StreamResolution.init(rawValue:)) ?? .fullHD,
             fps: StreamPreset.frameRates.contains(savedFPS) ? savedFPS : 30)
         orientation = defaults.string(forKey: Keys.orientation).flatMap(VideoOrientation.init(rawValue:)) ?? .auto
+        if let saved = defaults.dictionary(forKey: Keys.effects) {
+            effectSettings = Self.effectSettings(from: saved, base: EffectSettings())
+            effects.update(effectSettings)
+        }
 
-        Self.connectPipeline(camera: camera, encoder: encoder, server: server)
+        Self.connectPipeline(camera: camera, effects: effects, encoder: encoder, server: server)
         server.onClientChanged = { [weak self] name in
             Task { @MainActor in
                 self?.clientName = name
@@ -81,10 +89,11 @@ final class StreamEngine: ObservableObject {
     }
 
     /// Nonisolated so these per-frame closures are not tied to the main actor.
-    private nonisolated static func connectPipeline(camera: CameraCapture, encoder: VideoEncoder, server: StreamServer) {
+    private nonisolated static func connectPipeline(camera: CameraCapture, effects: VideoEffects,
+                                                   encoder: VideoEncoder, server: StreamServer) {
         camera.onFrame = { pixelBuffer, pts in
             guard server.hasClient else { return } // don't burn battery encoding for nobody
-            encoder.encode(pixelBuffer, pts: pts)
+            encoder.encode(effects.process(pixelBuffer), pts: pts)
         }
         encoder.onEncodedFrame = { data, keyframe, ptsMicros in
             server.send(frame: data, keyframe: keyframe, ptsMicros: ptsMicros)
@@ -92,10 +101,31 @@ final class StreamEngine: ObservableObject {
         server.onKeyframeNeeded = { encoder.requestKeyframe() }
         // New lens or format: tell the PC what the camera can do now.
         camera.onConfigured = { device, lens in
-            if let json = CameraControl.encode(CameraControl.capabilities(of: device, lens: lens)) {
+            if let json = CameraControl.encode(capabilities(of: device, lens: lens)) {
                 server.sendMessage(json)
             }
         }
+    }
+
+    private nonisolated static func capabilities(of device: AVCaptureDevice, lens: CameraLens) -> [String: Any] {
+        var caps = CameraControl.capabilities(of: device, lens: lens)
+        caps["filters"] = ColorFilter.allCases.map(\.rawValue).joined(separator: ",")
+        return caps
+    }
+
+    private nonisolated static func effectSettings(from values: [String: Any], base: EffectSettings) -> EffectSettings {
+        var settings = base
+        if let blur = values["blur"] as? NSNumber { settings.blur = blur.doubleValue.clamped(0, 1) }
+        if let retouch = values["retouch"] as? NSNumber { settings.retouch = retouch.doubleValue.clamped(0, 1) }
+        if let framing = values["framing"] as? Bool { settings.framing = framing }
+        if let filter = (values["filter"] as? String).flatMap(ColorFilter.init(rawValue:)) { settings.filter = filter }
+        if let amount = values["filterAmount"] as? NSNumber { settings.filterAmount = amount.doubleValue.clamped(0, 1) }
+        return settings
+    }
+
+    private nonisolated static func dictionary(of settings: EffectSettings) -> [String: Any] {
+        ["blur": settings.blur, "retouch": settings.retouch, "framing": settings.framing,
+         "filter": settings.filter.rawValue, "filterAmount": settings.filterAmount]
     }
 
     func start() {
@@ -142,6 +172,13 @@ final class StreamEngine: ObservableObject {
             }
             return
         }
+        if name == "effects" {
+            effectSettings = Self.effectSettings(from: command, base: effectSettings)
+            effects.update(effectSettings)
+            defaults.set(Self.dictionary(of: effectSettings), forKey: Keys.effects)
+            sendState()
+            return
+        }
         camera.withDevice { device in CameraControl.apply(command, to: device) }
         sendState()
     }
@@ -149,7 +186,7 @@ final class StreamEngine: ObservableObject {
     private func sendCapabilities() {
         let server = server
         camera.readDevice { device, lens in
-            if let json = CameraControl.encode(CameraControl.capabilities(of: device, lens: lens)) {
+            if let json = CameraControl.encode(Self.capabilities(of: device, lens: lens)) {
                 server.sendMessage(json)
             }
         }
@@ -158,8 +195,12 @@ final class StreamEngine: ObservableObject {
     private func sendState() {
         guard clientName != nil else { return }
         let server = server
+        let effects = effects
         camera.readDevice { device, lens in
-            if let json = CameraControl.encode(CameraControl.state(of: device, lens: lens)) {
+            var state = CameraControl.state(of: device, lens: lens)
+            state.merge(Self.dictionary(of: effects.current)) { _, effect in effect }
+            state["effectsMs"] = effects.current.isActive ? effects.lastProcessingMillis : 0
+            if let json = CameraControl.encode(state) {
                 server.sendMessage(json)
             }
         }

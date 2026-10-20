@@ -86,6 +86,9 @@ struct ContentView: View {
                 if engine.droppedFrames > 0 {
                     infoRow("Пропущено кадров", "\(engine.droppedFrames)")
                 }
+                if engine.effectSettings.isActive {
+                    infoRow("Эффекты", effectSummary)
+                }
             }
         }
         .padding()
@@ -128,6 +131,16 @@ struct ContentView: View {
         }
         .padding()
         .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 16))
+    }
+
+    private var effectSummary: String {
+        let settings = engine.effectSettings
+        var parts: [String] = []
+        if settings.blur > 0.01 { parts.append("размытие") }
+        if settings.retouch > 0.01 { parts.append("ретушь") }
+        if settings.framing { parts.append("слежение") }
+        if settings.filter != .none { parts.append("фильтр") }
+        return parts.joined(separator: " · ")
     }
 
     private func infoRow(_ title: String, _ value: String) -> some View {

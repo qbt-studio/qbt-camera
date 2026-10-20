@@ -25,6 +25,9 @@ constexpr int kLensIdBase = 100;
 constexpr int kExposureAutoId = 110;
 constexpr int kWhiteBalanceAutoId = 111;
 constexpr int kFocusAutoId = 112;
+constexpr int kFramingId = 113;
+constexpr int kTabIdBase = 120;
+constexpr int kFilterIdBase = 130;
 constexpr UINT_PTR kFlushTimer = 1;
 constexpr ULONGLONG kSendIntervalMs = 33;
 // After the user moves a control, ignore the phone's live value for it for a moment,
@@ -33,6 +36,8 @@ constexpr ULONGLONG kTouchHoldMs = 1500;
 
 const char* const kLensNames[4] = {"ultrawide", "wide", "tele", "front"};
 const wchar_t* const kLensTitles[4] = {L"0.5×", L"1×", L"Теле", L"Фронт"};
+const char* const kFilterNames[8] = {"none", "warm", "cool", "cinema", "vivid", "soft", "mono", "noir"};
+const wchar_t* const kFilterTitles[8] = {L"Нет", L"Тёплый", L"Холодный", L"Кино", L"Яркий", L"Мягкий", L"Ч/Б", L"Нуар"};
 // Shutter speeds in microseconds: 1/8000 … 1/15 (1/50 and 1/100 avoid flicker under 50 Hz lights).
 constexpr double kShutterStops[] = {125, 250, 500, 1000, 2000, 4000, 5000, 8000, 10000, 16667, 20000, 33333, 40000, 66667};
 
@@ -190,20 +195,47 @@ ControlPanel::Slider ControlPanel::MakeSlider(const wchar_t* caption, int minimu
     return slider;
 }
 
+void ControlPanel::AddRow(Row row) {
+    row.tab = buildingTab_;
+    rows_.push_back(row);
+}
+
 void ControlPanel::AddHeader(const wchar_t* text, HWND toggle) {
     HWND label = MakeLabel(text, headerFont_);
     headers_.push_back(label);
-    rows_.push_back({Row::Header, label, toggle, {}});
+    AddRow({Row::Header, label, toggle, {}});
 }
 
 void ControlPanel::AddSlider(const Slider& slider) {
-    rows_.push_back({Row::SliderRow, nullptr, nullptr, slider});
+    AddRow({Row::SliderRow, nullptr, nullptr, slider});
 }
 
 void ControlPanel::CreateControls(HINSTANCE) {
+    tabButtons_[0] = MakeButton(L"Камера", kTabIdBase);
+    tabButtons_[1] = MakeButton(L"Эффекты", kTabIdBase + 1);
+    AddRow({Row::Tabs, nullptr, nullptr, {}});
+
+    // Tab 1: effects rendered on the phone.
+    buildingTab_ = 1;
+    AddHeader(L"ФОН");
+    AddSlider(blur_ = MakeSlider(L"Размытие", 0, 100));
+    AddHeader(L"ЛИЦО");
+    AddSlider(retouch_ = MakeSlider(L"Ретушь", 0, 100));
+    framingToggle_ = MakeButton(L"Выкл", kFramingId);
+    AddHeader(L"СЛЕЖЕНИЕ ЗА ЛИЦОМ", framingToggle_);
+    AddHeader(L"ЦВЕТ");
+    for (int i = 0; i < 8; ++i) filterButtons_[i] = MakeButton(kFilterTitles[i], kFilterIdBase + i);
+    AddRow({Row::Filters, nullptr, nullptr, {}});
+    AddSlider(filterAmount_ = MakeSlider(L"Сила", 0, 100));
+    SetPosition(filterAmount_, 100);
+    effectsInfo_ = MakeLabel(L"", statusFont_);
+    AddRow({Row::Info, effectsInfo_, nullptr, {}});
+
+    // Tab 0: the camera itself.
+    buildingTab_ = 0;
     AddHeader(L"КАМЕРА");
     for (int i = 0; i < 4; ++i) lensButtons_[i] = MakeButton(kLensTitles[i], kLensIdBase + i);
-    rows_.push_back({Row::Lenses, nullptr, nullptr, {}});
+    AddRow({Row::Lenses, nullptr, nullptr, {}});
 
     exposureAuto_ = MakeButton(L"Авто", kExposureAutoId);
     AddHeader(L"ЭКСПОЗИЦИЯ", exposureAuto_);
@@ -226,6 +258,7 @@ void ControlPanel::CreateControls(HINSTANCE) {
     AddHeader(L"ФОНАРИК");
     AddSlider(torch_ = MakeSlider(L"Яркость", 0, 100));
 
+    buildingTab_ = -1;
     status_ = MakeLabel(L"", statusFont_);
     SetPosition(kelvin_, 50);
 }
@@ -239,7 +272,32 @@ void ControlPanel::Layout() {
 
     const bool anyLensKnown = std::any_of(std::begin(lensAvailable_), std::end(lensAvailable_), [](bool b) { return b; });
     for (const Row& row : rows_) {
+        const bool visible = row.tab < 0 || row.tab == currentTab_;
+        ShowRow(row, visible);
+        if (!visible) continue;
         switch (row.kind) {
+        case Row::Tabs: {
+            const int gap = Scale(6);
+            const int tabWidth = (width - gap) / 2;
+            MoveWindow(tabButtons_[0], margin, y + Scale(6), tabWidth, Scale(34), TRUE);
+            MoveWindow(tabButtons_[1], margin + tabWidth + gap, y + Scale(6), tabWidth, Scale(34), TRUE);
+            y += Scale(44);
+            break;
+        }
+        case Row::Filters: {
+            const int gap = Scale(6);
+            const int buttonWidth = (width - gap * 3) / 4;
+            for (int i = 0; i < 8; ++i) {
+                MoveWindow(filterButtons_[i], margin + (i % 4) * (buttonWidth + gap), y + (i / 4) * Scale(38), buttonWidth,
+                           Scale(32), TRUE);
+            }
+            y += Scale(80);
+            break;
+        }
+        case Row::Info:
+            MoveWindow(row.label, margin, y + Scale(10), width, Scale(36), TRUE);
+            y += Scale(48);
+            break;
         case Row::Header:
             y += Scale(12);
             MoveWindow(row.label, margin, y + Scale(5), width - Scale(100), Scale(18), TRUE);
@@ -247,14 +305,14 @@ void ControlPanel::Layout() {
             y += Scale(34);
             break;
         case Row::Lenses: {
-            int visible = 0;
-            for (int i = 0; i < 4; ++i) visible += (!anyLensKnown || lensAvailable_[i]) ? 1 : 0;
+            int visibleCount = 0;
+            for (int i = 0; i < 4; ++i) visibleCount += (!anyLensKnown || lensAvailable_[i]) ? 1 : 0;
             const int gap = Scale(6);
-            const int buttonWidth = (width - gap * (visible - 1)) / std::max(visible, 1);
+            const int buttonWidth = (width - gap * (visibleCount - 1)) / std::max(visibleCount, 1);
             int x = margin;
             for (int i = 0; i < 4; ++i) {
                 const bool show = !anyLensKnown || lensAvailable_[i];
-                ShowWindow(lensButtons_[i], show ? SW_SHOW : SW_HIDE);
+                ShowWindow(lensButtons_[i], show ? SW_SHOWNA : SW_HIDE);
                 if (!show) continue;
                 MoveWindow(lensButtons_[i], x, y, buttonWidth, Scale(36), TRUE);
                 x += buttonWidth + gap;
@@ -276,6 +334,20 @@ void ControlPanel::Layout() {
     }
     const int statusTop = std::max<int>(y + Scale(18), client.bottom - Scale(76));
     MoveWindow(status_, margin, statusTop, width, Scale(64), TRUE);
+}
+
+void ControlPanel::ShowRow(const Row& row, bool show) {
+    const int command = show ? SW_SHOWNA : SW_HIDE;
+    for (HWND window : {row.label, row.toggle, row.slider.caption, row.slider.track, row.slider.value}) {
+        if (window) ShowWindow(window, command);
+    }
+    if (row.kind == Row::Lenses && !show) {
+        for (HWND button : lensButtons_) ShowWindow(button, SW_HIDE);
+    } else if (row.kind == Row::Filters) {
+        for (HWND button : filterButtons_) ShowWindow(button, command);
+    } else if (row.kind == Row::Tabs) {
+        for (HWND button : tabButtons_) ShowWindow(button, command);
+    }
 }
 
 int ControlPanel::Position(const Slider& slider) {
@@ -373,6 +445,15 @@ void ControlPanel::OnState(const JsonObject& state) {
     }
     if (!RecentlyTouched(Group::Zoom)) SetPosition(zoom_, ZoomPosition(state.Number("zoom", 1)));
     if (!RecentlyTouched(Group::Torch)) SetPosition(torch_, static_cast<int>(std::lround(state.Number("torch") * 100)));
+    if (!RecentlyTouched(Group::Effects) && state.Has("blur")) {
+        SetPosition(blur_, static_cast<int>(std::lround(state.Number("blur") * 100)));
+        SetPosition(retouch_, static_cast<int>(std::lround(state.Number("retouch") * 100)));
+        SetPosition(filterAmount_, static_cast<int>(std::lround(state.Number("filterAmount", 1) * 100)));
+        framingOn_ = state.Bool("framing");
+        const std::string filter = state.String("filter");
+        filter_ = filter.empty() ? "none" : filter;
+    }
+    effectsMillis_ = state.Number("effectsMs");
     RefreshButtons();
     RefreshEnabled();
     RefreshValueTexts();
@@ -417,6 +498,21 @@ void ControlPanel::RefreshValueTexts() {
     if (Position(torch_) == 0) wcscpy_s(text, L"выкл");
     else swprintf_s(text, L"%d %%", Position(torch_));
     show(torch_);
+
+    for (const Slider* slider : {&blur_, &retouch_}) {
+        if (Position(*slider) == 0) wcscpy_s(text, L"выкл");
+        else swprintf_s(text, L"%d %%", Position(*slider));
+        show(*slider);
+    }
+    swprintf_s(text, L"%d %%", Position(filterAmount_));
+    show(filterAmount_);
+
+    wchar_t info[160] = L"";
+    if (connected_ && effectsMillis_ > 0.05)
+        swprintf_s(info, L"Эффекты считает iPhone (нейропроцессор + GPU):\n%.1f мс на кадр", effectsMillis_);
+    else if (connected_)
+        wcscpy_s(info, L"Эффекты выключены: видео идёт без обработки.");
+    SetWindowTextW(effectsInfo_, info);
 }
 
 void ControlPanel::RefreshEnabled() {
@@ -437,20 +533,35 @@ void ControlPanel::RefreshEnabled() {
     enable(focus_, connected_ && manualFocus_);
     enable(zoom_, connected_);
     enable(torch_, connected_ && hasTorch_);
+    enable(blur_, connected_);
+    enable(retouch_, connected_);
+    enable(filterAmount_, connected_ && filter_ != "none");
+    EnableWindow(framingToggle_, connected_);
+    for (HWND button : filterButtons_) EnableWindow(button, connected_);
 }
 
 void ControlPanel::RefreshButtons() {
     SetWindowTextW(exposureAuto_, exposureIsAuto_ ? L"Авто" : L"Ручной");
     SetWindowTextW(whiteBalanceAuto_, whiteBalanceIsAuto_ ? L"Авто" : L"Ручной");
     SetWindowTextW(focusAuto_, focusIsAuto_ ? L"Авто" : L"Ручной");
+    SetWindowTextW(framingToggle_, framingOn_ ? L"Вкл" : L"Выкл");
     for (HWND button : lensButtons_) InvalidateRect(button, nullptr, FALSE);
-    for (HWND button : {exposureAuto_, whiteBalanceAuto_, focusAuto_}) InvalidateRect(button, nullptr, FALSE);
+    for (HWND button : filterButtons_) InvalidateRect(button, nullptr, FALSE);
+    for (HWND button : tabButtons_) InvalidateRect(button, nullptr, FALSE);
+    for (HWND button : {exposureAuto_, whiteBalanceAuto_, focusAuto_, framingToggle_}) InvalidateRect(button, nullptr, FALSE);
 }
 
 bool ControlPanel::ButtonActive(HWND button) const {
     for (int i = 0; i < 4; ++i) {
         if (button == lensButtons_[i]) return connected_ && lens_ == kLensNames[i];
     }
+    for (int i = 0; i < 2; ++i) {
+        if (button == tabButtons_[i]) return currentTab_ == i;
+    }
+    for (int i = 0; i < 8; ++i) {
+        if (button == filterButtons_[i]) return filter_ == kFilterNames[i];
+    }
+    if (button == framingToggle_) return framingOn_;
     if (button == exposureAuto_) return exposureIsAuto_;
     if (button == whiteBalanceAuto_) return whiteBalanceIsAuto_;
     if (button == focusAuto_) return focusIsAuto_;
@@ -478,8 +589,17 @@ void ControlPanel::SendFocus() {
                                      : Format(R"({"cmd":"focusManual","lensPosition":%.2f})", Position(focus_) / 100.0));
 }
 
+void ControlPanel::SendEffects() {
+    Queue(Group::Effects,
+          Format(R"({"cmd":"effects","blur":%.2f,"retouch":%.2f,"framing":%s,"filter":"%s","filterAmount":%.2f})",
+                 Position(blur_) / 100.0, Position(retouch_) / 100.0, framingOn_ ? "true" : "false", filter_.c_str(),
+                 Position(filterAmount_) / 100.0));
+}
+
 void ControlPanel::OnSliderMoved(HWND track) {
-    if (track == iso_.track || track == shutter_.track) {
+    if (track == blur_.track || track == retouch_.track || track == filterAmount_.track) {
+        SendEffects();
+    } else if (track == iso_.track || track == shutter_.track) {
         exposureIsAuto_ = false;
         SendExposure();
     } else if (track == bias_.track) {
@@ -501,7 +621,20 @@ void ControlPanel::OnSliderMoved(HWND track) {
 }
 
 void ControlPanel::OnButton(int id) {
-    if (id >= kLensIdBase && id < kLensIdBase + 4) {
+    if (id >= kTabIdBase && id < kTabIdBase + 2) {
+        currentTab_ = id - kTabIdBase;
+        Layout();
+        RefreshButtons();
+        InvalidateRect(panel_, nullptr, TRUE);
+        return;
+    }
+    if (id >= kFilterIdBase && id < kFilterIdBase + 8) {
+        filter_ = kFilterNames[id - kFilterIdBase];
+        SendEffects();
+    } else if (id == kFramingId) {
+        framingOn_ = !framingOn_;
+        SendEffects();
+    } else if (id >= kLensIdBase && id < kLensIdBase + 4) {
         const int index = id - kLensIdBase;
         if (!lensAvailable_[index]) return;
         lens_ = kLensNames[index];

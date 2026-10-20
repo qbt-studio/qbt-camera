@@ -9,9 +9,10 @@
 
 #include "Json.h"
 
-// Camera controls next to the preview: lens buttons, exposure / white balance / focus with
-// Auto toggles, zoom and torch. Sliders follow the phone's live values; moving one switches
-// that group to manual and sends a command. Commands are coalesced to ~30 per second.
+// Controls next to the preview, on two tabs. "Камера": lens buttons, exposure / white balance /
+// focus with Auto toggles, zoom and torch. "Эффекты": background blur, retouch, face tracking and
+// color filters (rendered on the phone). Sliders follow the phone's live values; moving one
+// switches that group to manual and sends a command. Commands are coalesced to ~30 per second.
 class ControlPanel {
 public:
     using CommandSink = std::function<void(const std::string& json)>;
@@ -26,7 +27,7 @@ public:
     void SetStatus(const std::wstring& text);
 
 private:
-    enum class Group { Lens, Exposure, Bias, WhiteBalance, Focus, Zoom, Torch, Count };
+    enum class Group { Lens, Exposure, Bias, WhiteBalance, Focus, Zoom, Torch, Effects, Count };
 
     struct Slider {
         HWND caption = nullptr;
@@ -35,10 +36,11 @@ private:
     };
 
     struct Row {
-        enum Kind { Header, Lenses, SliderRow } kind;
-        HWND label = nullptr;  // header text
-        HWND toggle = nullptr; // optional Auto button in a header
+        enum Kind { Tabs, Header, Lenses, SliderRow, Filters, Info } kind;
+        HWND label = nullptr;  // header or info text
+        HWND toggle = nullptr; // optional toggle button in a header
         Slider slider;
+        int tab = -1;          // -1: shown on every tab
     };
 
     static LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam);
@@ -50,8 +52,10 @@ private:
     HWND MakeLabel(const wchar_t* text, HFONT font);
     HWND MakeButton(const wchar_t* text, int id);
     Slider MakeSlider(const wchar_t* caption, int minimum, int maximum);
+    void AddRow(Row row);
     void AddHeader(const wchar_t* text, HWND toggle = nullptr);
     void AddSlider(const Slider& slider);
+    void ShowRow(const Row& row, bool show);
 
     static int Position(const Slider& slider);
     static void SetPosition(const Slider& slider, int position);
@@ -65,6 +69,7 @@ private:
     void SendExposure();
     void SendWhiteBalance();
     void SendFocus();
+    void SendEffects();
     void Queue(Group group, std::string json);
     void Flush();
     bool RecentlyTouched(Group group) const;
@@ -97,7 +102,14 @@ private:
     HWND whiteBalanceAuto_ = nullptr;
     HWND focusAuto_ = nullptr;
     Slider iso_, shutter_, bias_, kelvin_, tint_, focus_, zoom_, torch_;
+    HWND tabButtons_[2] = {};
+    Slider blur_, retouch_, filterAmount_;
+    HWND framingToggle_ = nullptr;
+    HWND filterButtons_[8] = {};
+    HWND effectsInfo_ = nullptr;
     HWND status_ = nullptr;
+    int currentTab_ = 0;
+    int buildingTab_ = -1; // tab assigned to rows while creating controls
 
     // What the phone told us.
     bool connected_ = false;
@@ -107,6 +119,9 @@ private:
     double minIso_ = 50, maxIso_ = 3200, minZoom_ = 1, maxZoom_ = 10;
     std::vector<double> shutterStops_;
     bool exposureIsAuto_ = true, whiteBalanceIsAuto_ = true, focusIsAuto_ = true;
+    bool framingOn_ = false;
+    std::string filter_ = "none";
+    double effectsMillis_ = 0;
 
     ULONGLONG touched_[static_cast<int>(Group::Count)] = {};
     std::map<Group, std::string> pending_;

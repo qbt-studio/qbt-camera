@@ -26,7 +26,7 @@ target_link_libraries(QBTVirtualCamera PRIVATE mfplat mfuuid ole32 advapi32 gdi3
 # The Windows app: receives the iPhone stream, decodes on the GPU, previews and feeds the camera.
 add_executable(QBTCamera WIN32
     host/AudioOutput.cpp
-    host/ControlPanel.cpp
+    host/StudioUi.cpp
     host/Decoder.cpp
     host/Main.cpp
     host/PhoneLink.cpp
@@ -36,4 +36,4 @@ add_executable(QBTCamera WIN32
     host/VideoPipeline.cpp
     host/VirtualCamera.cpp)
 target_link_libraries(QBTCamera PRIVATE
-    d3d11 dxgi mfplat mfuuid mfsensorgroup wmcodecdspuuid ws2_32 ole32 shell32 user32 gdi32 comctl32 dwmapi avrt)
+    d3d11 dxgi mfplat mfuuid mfsensorgroup wmcodecdspuuid ws2_32 ole32 shell32 user32 gdi32 comctl32 dwmapi avrt d2d1 dwrite dcomp)

@@ -185,6 +185,7 @@ final class StreamEngine: ObservableObject {
         var caps = CameraControl.capabilities(of: device, lens: lens)
         caps["filters"] = ColorFilter.allCases.map(\.rawValue).joined(separator: ",")
         caps["microphone"] = AVCaptureDevice.default(for: .audio) != nil
+        caps["teleTitle"] = CameraLens.telephoto.title
         // Lets the PC fall back to Wi-Fi instantly when the cable is pulled, without scanning the network.
         caps["wifi"] = NetworkInfo.wifiAddress() ?? ""
         return caps
@@ -366,7 +367,11 @@ final class StreamEngine: ObservableObject {
             "prompterSpeed": prompterSpeed,
             "blackout": blackout,
             "paused": paused,
+            "resolution": preset.resolution.rawValue,
+            "fps": preset.fps,
+            "orientation": orientation.rawValue,
         ]
+        if let roundTripMillis { extras["rttMs"] = roundTripMillis }
         extras.merge(Self.dictionary(of: effects.current)) { _, effect in effect }
         camera.readDevice { [weak self] device, lens in
             var state = CameraControl.state(of: device, lens: lens)

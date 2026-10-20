@@ -13,17 +13,19 @@ final class VideoEncoder {
     private var fps = 30
     private var bitrate = 10_000_000
     private var keyframeRequested = false
+    private var needsReset = false
 
     deinit {
         if let session { VTCompressionSessionInvalidate(session) }
     }
 
-    /// New settings take effect on the next frame (the session is rebuilt).
+    /// New settings take effect on the next frame (the session is rebuilt there, off the main thread:
+    /// tearing down a busy 4K session can block for seconds and the system kills apps that hang).
     func configure(fps: Int, bitrate: Int) {
         lock.withLock {
             self.fps = fps
             self.bitrate = bitrate
-            resetSession()
+            needsReset = true
         }
     }
 
@@ -45,17 +47,20 @@ final class VideoEncoder {
     func encode(_ pixelBuffer: CVPixelBuffer, pts: CMTime) {
         let width = Int32(CVPixelBufferGetWidth(pixelBuffer))
         let height = Int32(CVPixelBufferGetHeight(pixelBuffer))
-        let (session, forceKeyframe): (VTCompressionSession?, Bool) = lock.withLock {
+        let (session, forceKeyframe, retired): (VTCompressionSession?, Bool, VTCompressionSession?) = lock.withLock {
             // Rotation changes the buffer size: rebuild so the stream carries the new SPS.
-            if self.session == nil || size.width != width || size.height != height {
-                resetSession()
+            var retired: VTCompressionSession?
+            if self.session == nil || needsReset || size.width != width || size.height != height {
+                retired = takeSession()
+                needsReset = false
                 self.session = makeSession(width: width, height: height)
                 size = (width, height)
                 keyframeRequested = true
             }
             defer { keyframeRequested = false }
-            return (self.session, keyframeRequested)
+            return (self.session, keyframeRequested, retired)
         }
+        if let retired { VTCompressionSessionInvalidate(retired) } // outside the lock: may wait for frames in flight
         guard let session else { return }
 
         let properties = forceKeyframe ? [kVTEncodeFrameOptionKey_ForceKeyFrame: true] as CFDictionary : nil
@@ -66,15 +71,17 @@ final class VideoEncoder {
             self.deliver(sampleBuffer)
         }
         if status == kVTInvalidSessionErr { // happens after the app returns from background
-            lock.withLock { resetSession() }
+            if let retired = lock.withLock({ takeSession() }) { VTCompressionSessionInvalidate(retired) }
         }
     }
 
-    // Must be called with `lock` held.
-    private func resetSession() {
-        if let session { VTCompressionSessionInvalidate(session) }
-        session = nil
-        size = (0, 0)
+    // Must be called with `lock` held. The caller invalidates the returned session after unlocking.
+    private func takeSession() -> VTCompressionSession? {
+        defer {
+            session = nil
+            size = (0, 0)
+        }
+        return session
     }
 
     // Must be called with `lock` held.

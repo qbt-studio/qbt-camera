@@ -2,7 +2,12 @@
 
 #include <d3d11_4.h>
 
+#include <cmath>
+
 namespace {
+
+// Preview card color: letterbox bars and the idle screen blend into the interface.
+constexpr float kCard[4] = {0.039f, 0.047f, 0.071f, 1.0f};
 
 // Largest rectangle with the source aspect ratio, centered in the target.
 RECT Fit(const RECT& source, UINT targetWidth, UINT targetHeight) {
@@ -20,7 +25,6 @@ RECT Fit(const RECT& source, UINT targetWidth, UINT targetHeight) {
 } // namespace
 
 HRESULT VideoPipeline::Initialize(HWND window) {
-    window_ = window;
     const D3D_FEATURE_LEVEL levels[] = {D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0};
     RETURN_IF_FAILED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
                                        D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT, levels,
@@ -44,6 +48,8 @@ HRESULT VideoPipeline::Initialize(HWND window) {
     ComPtr<IDXGIFactory2> factory;
     RETURN_IF_FAILED(adapter->GetParent(IID_PPV_ARGS(&factory)));
     DXGI_SWAP_CHAIN_DESC1 desc{};
+    desc.Width = wantedWidth_;
+    desc.Height = wantedHeight_;
     desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
     desc.SampleDesc.Count = 1;
     desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
@@ -51,20 +57,71 @@ HRESULT VideoPipeline::Initialize(HWND window) {
     desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
     desc.Scaling = DXGI_SCALING_STRETCH;
     desc.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
-    RETURN_IF_FAILED(factory->CreateSwapChainForHwnd(device_.Get(), window, &desc, nullptr, nullptr, &swapChain_));
-    factory->MakeWindowAssociation(window, DXGI_MWA_NO_ALT_ENTER);
-    swapChain_->GetDesc1(&desc);
+    RETURN_IF_FAILED(factory->CreateSwapChainForComposition(device_.Get(), &desc, nullptr, &swapChain_));
     backBufferWidth_ = desc.Width;
     backBufferHeight_ = desc.Height;
-    return S_OK;
+
+    // The preview visual floats above the window's own (Direct2D) content.
+    RETURN_IF_FAILED(DCompositionCreateDevice(dxgiDevice.Get(), IID_PPV_ARGS(&composition_)));
+    RETURN_IF_FAILED(composition_->CreateTargetForHwnd(window, TRUE, &compositionTarget_));
+    RETURN_IF_FAILED(composition_->CreateVisual(&visual_));
+    RETURN_IF_FAILED(composition_->CreateRectangleClip(&clip_));
+    RETURN_IF_FAILED(visual_->SetContent(swapChain_.Get()));
+    RETURN_IF_FAILED(visual_->SetClip(clip_.Get()));
+    RETURN_IF_FAILED(compositionTarget_->SetRoot(visual_.Get()));
+
+    D2D1_FACTORY_OPTIONS options{};
+    RETURN_IF_FAILED(D2D1CreateFactory(D2D1_FACTORY_TYPE_MULTI_THREADED, __uuidof(ID2D1Factory1), &options,
+                                       reinterpret_cast<void**>(d2dFactory_.GetAddressOf())));
+    RETURN_IF_FAILED(d2dFactory_->CreateDevice(dxgiDevice.Get(), &d2dDevice_));
+    RETURN_IF_FAILED(d2dDevice_->CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE, &d2dContext_));
+    RETURN_IF_FAILED(DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory),
+                                         reinterpret_cast<IUnknown**>(dwrite_.GetAddressOf())));
+    return composition_->Commit();
+}
+
+void VideoPipeline::SetPreviewRect(const RECT& rect, float cornerRadius) {
+    if (!visual_) return;
+    const float width = static_cast<float>(std::max<LONG>(rect.right - rect.left, 16));
+    const float height = static_cast<float>(std::max<LONG>(rect.bottom - rect.top, 16));
+    visual_->SetOffsetX(static_cast<float>(rect.left));
+    visual_->SetOffsetY(static_cast<float>(rect.top));
+    clip_->SetLeft(0.0f);
+    clip_->SetTop(0.0f);
+    clip_->SetRight(width);
+    clip_->SetBottom(height);
+    clip_->SetTopLeftRadiusX(cornerRadius);
+    clip_->SetTopLeftRadiusY(cornerRadius);
+    clip_->SetTopRightRadiusX(cornerRadius);
+    clip_->SetTopRightRadiusY(cornerRadius);
+    clip_->SetBottomLeftRadiusX(cornerRadius);
+    clip_->SetBottomLeftRadiusY(cornerRadius);
+    clip_->SetBottomRightRadiusX(cornerRadius);
+    clip_->SetBottomRightRadiusY(cornerRadius);
+    // The buffer follows on the next Present (or RefreshIdle); the card behind has the same color meanwhile.
+    wantedWidth_ = static_cast<UINT>(width);
+    wantedHeight_ = static_cast<UINT>(height);
+    composition_->Commit();
+}
+
+void VideoPipeline::SetIdleMessage(const std::wstring& title, const std::wstring& subtitle) {
+    std::lock_guard lock(mutex_);
+    idleTitle_ = title;
+    idleSubtitle_ = subtitle;
+}
+
+void VideoPipeline::RefreshIdle() {
+    bool idle;
+    {
+        std::lock_guard lock(mutex_);
+        idle = showingIdle_;
+    }
+    if (idle) Present(nullptr);
 }
 
 HRESULT VideoPipeline::ResizeIfNeeded() {
-    if (!resizePending_.exchange(false)) return S_OK;
-    RECT client{};
-    GetClientRect(window_, &client);
-    const UINT width = std::max<LONG>(client.right - client.left, 16);
-    const UINT height = std::max<LONG>(client.bottom - client.top, 16);
+    const UINT width = std::max<UINT>(wantedWidth_, 16);
+    const UINT height = std::max<UINT>(wantedHeight_, 16);
     if (width == backBufferWidth_ && height == backBufferHeight_) return S_OK;
     context_->ClearState();
     RETURN_IF_FAILED(swapChain_->ResizeBuffers(0, width, height, DXGI_FORMAT_UNKNOWN, 0));
@@ -136,7 +193,7 @@ HRESULT VideoPipeline::Blit(Processor& processor, const DecodedFrame& frame, ID3
         background.YCbCr = {16.0f / 255.0f, 0.5f, 0.5f, 1.0f}; // black bars
     } else {
         outputSpace.RGB_Range = 0; // full range for the screen
-        background.RGBA = {0.04f, 0.045f, 0.06f, 1.0f};
+        background.RGBA = {kCard[0], kCard[1], kCard[2], 1.0f};
     }
     videoContext_->VideoProcessorSetOutputColorSpace(vp, &outputSpace);
     videoContext_->VideoProcessorSetOutputBackgroundColor(vp, yuvTarget ? TRUE : FALSE, &background);
@@ -148,22 +205,80 @@ HRESULT VideoPipeline::Blit(Processor& processor, const DecodedFrame& frame, ID3
 }
 
 HRESULT VideoPipeline::Present(const DecodedFrame* frame) {
+    std::lock_guard lock(mutex_);
+    if (!swapChain_) return E_UNEXPECTED;
     RETURN_IF_FAILED(ResizeIfNeeded());
     ComPtr<ID3D11Texture2D> backBuffer;
     RETURN_IF_FAILED(swapChain_->GetBuffer(0, IID_PPV_ARGS(&backBuffer)));
+    showingIdle_ = frame == nullptr;
     if (frame) {
         RETURN_IF_FAILED(Blit(previewProcessor_, *frame, backBuffer.Get(), false, backBufferWidth_, backBufferHeight_));
     } else {
-        ComPtr<ID3D11RenderTargetView> view;
-        RETURN_IF_FAILED(device_->CreateRenderTargetView(backBuffer.Get(), nullptr, &view));
-        const float idle[4] = {0.04f, 0.045f, 0.06f, 1.0f};
-        context_->ClearRenderTargetView(view.Get(), idle);
+        RETURN_IF_FAILED(DrawIdle(backBuffer.Get()));
     }
     return swapChain_->Present(0, 0); // no vsync wait: show the newest frame as early as possible
 }
 
+HRESULT VideoPipeline::DrawIdle(ID3D11Texture2D* backBuffer) {
+    ComPtr<IDXGISurface> surface;
+    RETURN_IF_FAILED(backBuffer->QueryInterface(IID_PPV_ARGS(&surface)));
+    const D2D1_BITMAP_PROPERTIES1 properties = D2D1::BitmapProperties1(
+        D2D1_BITMAP_OPTIONS_TARGET | D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
+        D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_IGNORE));
+    ComPtr<ID2D1Bitmap1> bitmap;
+    RETURN_IF_FAILED(d2dContext_->CreateBitmapFromDxgiSurface(surface.Get(), &properties, &bitmap));
+    d2dContext_->SetTarget(bitmap.Get());
+    d2dContext_->BeginDraw();
+    d2dContext_->Clear(D2D1::ColorF(kCard[0], kCard[1], kCard[2]));
+
+    const float width = static_cast<float>(backBufferWidth_);
+    const float height = static_cast<float>(backBufferHeight_);
+    const float unit = std::max(0.5f, std::min(width / 900.0f, height / 520.0f)); // scales with the preview
+    const float cx = width / 2, cy = height / 2 - 30 * unit;
+
+    // Soft brand glow behind the logo.
+    ComPtr<ID2D1GradientStopCollection> stops;
+    const D2D1_GRADIENT_STOP glowStops[] = {{0.0f, D2D1::ColorF(0x2B7FFF, 0.22f)}, {1.0f, D2D1::ColorF(0x2B7FFF, 0.0f)}};
+    d2dContext_->CreateGradientStopCollection(glowStops, 2, &stops);
+    ComPtr<ID2D1RadialGradientBrush> glow;
+    if (stops) {
+        d2dContext_->CreateRadialGradientBrush(
+            D2D1::RadialGradientBrushProperties(D2D1::Point2F(cx, cy), {}, 300 * unit, 220 * unit), stops.Get(), &glow);
+    }
+    if (glow) d2dContext_->FillRectangle(D2D1::RectF(0, 0, width, height), glow.Get());
+
+    // QBT logo (rounded square outline with a corner badge, 100x100 viewBox).
+    const float size = 72 * unit;
+    const float x = cx - size / 2, y = cy - size / 2;
+    const auto at = [size](float units) { return units * size / 100.0f; };
+    ComPtr<ID2D1SolidColorBrush> brush;
+    RETURN_IF_FAILED(d2dContext_->CreateSolidColorBrush(D2D1::ColorF(0x2B7FFF), &brush));
+    const D2D1_ROUNDED_RECT outline{D2D1::RectF(x + at(11), y + at(11), x + at(83), y + at(83)), at(24), at(24)};
+    d2dContext_->DrawRoundedRectangle(outline, brush.Get(), at(10.5f));
+    brush->SetColor(D2D1::ColorF(0x539BFF));
+    d2dContext_->FillRoundedRectangle({D2D1::RectF(x + at(66), y + at(66), x + at(94), y + at(94)), at(9), at(9)}, brush.Get());
+
+    const auto text = [&](const std::wstring& value, float top, float fontSize, DWRITE_FONT_WEIGHT weight, D2D1_COLOR_F color) {
+        ComPtr<IDWriteTextFormat> format;
+        if (FAILED(dwrite_->CreateTextFormat(L"Segoe UI Variable Display", nullptr, weight, DWRITE_FONT_STYLE_NORMAL,
+                                             DWRITE_FONT_STRETCH_NORMAL, fontSize, L"ru-ru", &format)))
+            return;
+        format->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+        brush->SetColor(color);
+        d2dContext_->DrawText(value.c_str(), static_cast<UINT32>(value.size()), format.Get(),
+                              D2D1::RectF(0, top, width, top + fontSize * 2), brush.Get());
+    };
+    text(idleTitle_, y + size + 22 * unit, 24 * unit, DWRITE_FONT_WEIGHT_SEMI_BOLD, D2D1::ColorF(0xFFFFFF));
+    text(idleSubtitle_, y + size + 60 * unit, 15 * unit, DWRITE_FONT_WEIGHT_NORMAL, D2D1::ColorF(0xFFFFFF, 0.55f));
+
+    const HRESULT hr = d2dContext_->EndDraw();
+    d2dContext_->SetTarget(nullptr);
+    return hr;
+}
+
 HRESULT VideoPipeline::RenderNV12(const DecodedFrame& frame, UINT width, UINT height,
                                   const std::function<void(const uint8_t*, UINT)>& consume) {
+    std::lock_guard lock(mutex_);
     if (!cameraTarget_ || cameraWidth_ != width || cameraHeight_ != height) {
         cameraTarget_.Reset();
         cameraStaging_.Reset();

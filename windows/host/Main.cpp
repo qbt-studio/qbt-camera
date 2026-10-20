@@ -16,16 +16,16 @@
 #include <thread>
 
 #include "AudioOutput.h"
-#include "ControlPanel.h"
 #include "Decoder.h"
 #include "PhoneLink.h"
 #include "SharedFrameWriter.h"
 #include "Shell.h"
+#include "StudioUi.h"
 #include "Usbmux.h"
 #include "VideoPipeline.h"
 #include "VirtualCamera.h"
 
-// Common Controls 6: themed trackbars and buttons.
+// Common Controls 6: modern tray menus and message boxes.
 #pragma comment(linker, "\"/manifestdependency:type='win32' name='Microsoft.Windows.Common-Controls' " \
                         "version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
 
@@ -36,7 +36,6 @@ constexpr UINT kPhoneMessage = WM_APP + 2;   // lParam: std::string* with JSON f
 constexpr UINT kDisconnectedMessage = WM_APP + 3;
 constexpr UINT kTrayMessage = WM_APP + 4;
 constexpr wchar_t kWindowClass[] = L"QBTCameraHostWindow";
-constexpr wchar_t kPreviewClass[] = L"QBTCameraPreview";
 constexpr wchar_t kSingleInstanceMutex[] = L"Local\\QBTCameraHostSingleInstance";
 constexpr UINT_PTR kMeterTimer = 1;
 constexpr UINT_PTR kDevicesTimer = 2;
@@ -46,7 +45,6 @@ constexpr ULONGLONG kUsbRetryDelayMs = 30'000;
 
 struct App {
     HWND window = nullptr;
-    HWND preview = nullptr;
     HICON icon = nullptr;
     HICON smallIcon = nullptr;
     shell::TrayIcon tray;
@@ -56,7 +54,7 @@ struct App {
     bool trayHintShown = false;
     std::atomic<bool> usbPresent{false};
     std::thread usbWatcher;
-    ControlPanel panel;
+    StudioUi panel;
     VideoPipeline pipeline;
     PhoneLink link;
     AudioOutput audio;
@@ -69,26 +67,31 @@ struct App {
     std::atomic<bool> stop{false};
     std::thread worker;
     std::mutex statusMutex;
-    std::wstring status;
+    HostStatus status;
 };
 
 App* g_app = nullptr;
 
-void SetStatus(std::wstring text) {
+void SetStatus(HostStatus status) {
+    status.cameraInstalled = g_app->virtualCameraReady;
     {
         std::lock_guard lock(g_app->statusMutex);
-        g_app->status = std::move(text);
+        g_app->status = std::move(status);
     }
     PostMessageW(g_app->window, kStatusMessage, 0, 0);
 }
 
-void SleepUnlessStopped(DWORD milliseconds) {
-    for (DWORD waited = 0; waited < milliseconds && !g_app->stop; waited += 50) Sleep(50);
+HostStatus MakeStatus(HostStatus::Phase phase, const std::wstring& route = {}, bool usb = false) {
+    HostStatus status;
+    status.phase = phase;
+    status.route = route;
+    status.usb = usb;
+    status.cameraInUse = g_app->cameraOutput.CameraInUse();
+    return status;
 }
 
-std::wstring CameraState(bool inUse) {
-    if (!g_app->virtualCameraReady) return L"Виртуальная камера не установлена";
-    return inUse ? L"Камера «QBT Camera» используется" : L"Камера «QBT Camera» готова";
+void SleepUnlessStopped(DWORD milliseconds) {
+    for (DWORD waited = 0; waited < milliseconds && !g_app->stop; waited += 50) Sleep(50);
 }
 
 void StreamLoop() {
@@ -96,7 +99,10 @@ void StreamLoop() {
     App& app = *g_app;
     H264Decoder decoder;
     if (FAILED(decoder.Initialize(app.pipeline.Device()))) {
-        SetStatus(L"Ошибка: аппаратный декодер H.264 недоступен");
+        HostStatus status;
+        status.phase = HostStatus::Phase::Error;
+        status.error = L"Аппаратный декодер H.264 недоступен";
+        SetStatus(status);
         CoUninitialize();
         return;
     }
@@ -105,8 +111,9 @@ void StreamLoop() {
     std::vector<uint8_t> payload;
     ULONGLONG usbRetryAfter = 0;
     while (!app.stop) {
+        app.pipeline.SetIdleMessage(L"Ждём iPhone", L"Откройте QBT Camera на телефоне — подключение по USB или Wi-Fi");
         app.pipeline.Present(nullptr);
-        SetStatus(L"Поиск iPhone по USB и Wi-Fi…\nОткройте QBT Camera на телефоне.\n" + CameraState(false));
+        SetStatus(MakeStatus(HostStatus::Phase::Searching));
         std::wstring route;
         bool usb = false;
         if (!app.link.Connect(app.stop, route, usb)) {
@@ -116,7 +123,7 @@ void StreamLoop() {
         // A cable is in but USB didn't work (PC not trusted yet, app just restarting): don't flap.
         if (!usb && app.usbPresent) usbRetryAfter = GetTickCount64() + kUsbRetryDelayMs;
         decoder.Flush();
-        SetStatus(L"Подключено: " + route);
+        SetStatus(MakeStatus(HostStatus::Phase::Connected, route, usb));
 
         uint32_t framesReceived = 0;
         bool phonePaused = false;
@@ -143,10 +150,11 @@ void StreamLoop() {
                         phonePaused = paused;
                         qbt::Log("phone: picture %s", paused ? "paused (app in background)" : "resumed");
                         if (paused) {
+                            app.pipeline.SetIdleMessage(L"Картинка на паузе",
+                                                        L"Приложение на iPhone свёрнуто. Звук продолжает идти.");
                             app.pipeline.Present(nullptr);
-                            SetStatus(L"Подключено: " + route + L"\nПриложение на iPhone свёрнуто: картинка на паузе, звук идёт.\n" +
-                                      CameraState(app.cameraOutput.CameraInUse()));
                         }
+                        SetStatus(MakeStatus(paused ? HostStatus::Phase::Paused : HostStatus::Phase::Connected, route, usb));
                     }
                 }
                 PostMessageW(app.window, kPhoneMessage, 0,
@@ -182,11 +190,12 @@ void StreamLoop() {
             const ULONGLONG now = GetTickCount64();
             if (now - windowStart >= 1000) {
                 const double seconds = (now - windowStart) / 1000.0;
-                wchar_t text[320];
-                swprintf_s(text, L"Подключено: %s\n%ld×%ld  ·  %.0f к/с  ·  %.1f Мбит/с\n%s", route.c_str(), width, height,
-                           framesShown / seconds, bytes * 8 / seconds / 1e6,
-                           CameraState(app.cameraOutput.CameraInUse()).c_str());
-                SetStatus(text);
+                HostStatus status = MakeStatus(HostStatus::Phase::Connected, route, usb);
+                status.width = width;
+                status.height = height;
+                status.fps = framesShown / seconds;
+                status.megabits = bytes * 8 / seconds / 1e6;
+                SetStatus(status);
                 framesShown = 0;
                 bytes = 0;
                 windowStart = now;
@@ -203,11 +212,11 @@ void StreamLoop() {
 void LayoutChildren(HWND window) {
     RECT client;
     GetClientRect(window, &client);
-    const int panelWidth = MulDiv(ControlPanel::kWidth, static_cast<int>(GetDpiForWindow(window)), 96);
-    const int previewWidth = std::max<int>(client.right - panelWidth, 0);
-    MoveWindow(g_app->preview, 0, 0, previewWidth, client.bottom, TRUE);
-    MoveWindow(g_app->panel.Handle(), previewWidth, 0, client.right - previewWidth, client.bottom, TRUE);
-    g_app->pipeline.RequestResize();
+    MoveWindow(g_app->panel.Handle(), 0, 0, client.right, client.bottom, TRUE);
+    // The preview card has 20 DIP corners; the video sits 1 DIP inside its rim.
+    const float radius = 19.0f * static_cast<float>(GetDpiForWindow(window)) / 96.0f;
+    g_app->pipeline.SetPreviewRect(g_app->panel.PreviewRect(), radius);
+    g_app->pipeline.RefreshIdle();
 }
 
 void HandlePhoneMessage(const std::string& json) {
@@ -279,11 +288,6 @@ void RefreshAudioDevices(bool firstTime) {
     app.panel.SetAudioDevices(app.audioDevices, app.audioDevice);
 }
 
-LRESULT CALLBACK PreviewProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
-    if (message == WM_ERASEBKGND) return 1; // the swap chain paints everything
-    return DefWindowProcW(window, message, wParam, lParam);
-}
-
 void ShowMainWindow() {
     ShowWindow(g_app->window, IsIconic(g_app->window) ? SW_RESTORE : SW_SHOW);
     SetForegroundWindow(g_app->window);
@@ -332,8 +336,13 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         if (lParam == WM_RBUTTONUP || lParam == WM_CONTEXTMENU) ShowTrayMenu(window);
         return 0;
     case WM_SIZE:
-        if (g_app && g_app->preview) LayoutChildren(window);
+        if (g_app && g_app->panel.Handle()) LayoutChildren(window);
         return 0;
+    case WM_SETFOCUS:
+        if (g_app && g_app->panel.Handle()) SetFocus(g_app->panel.Handle());
+        return 0;
+    case WM_ERASEBKGND:
+        return 1;
     case WM_DPICHANGED: {
         const RECT* suggested = reinterpret_cast<RECT*>(lParam);
         SetWindowPos(window, nullptr, suggested->left, suggested->top, suggested->right - suggested->left,
@@ -343,17 +352,24 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     case WM_GETMINMAXINFO: {
         auto* limits = reinterpret_cast<MINMAXINFO*>(lParam);
         const int dpi = static_cast<int>(GetDpiForWindow(window));
-        limits->ptMinTrackSize = {MulDiv(860, dpi, 96), MulDiv(640, dpi, 96)};
+        limits->ptMinTrackSize = {MulDiv(1060, dpi, 96), MulDiv(700, dpi, 96)};
         return 0;
     }
     case kStatusMessage: {
-        std::wstring status;
+        HostStatus status;
         {
             std::lock_guard lock(g_app->statusMutex);
             status = g_app->status;
         }
         g_app->panel.SetStatus(status);
-        g_app->tray.SetTip((L"QBT Camera — " + status.substr(0, status.find(L'\n'))).c_str());
+        std::wstring tip = L"QBT Camera — ";
+        switch (status.phase) {
+        case HostStatus::Phase::Connected: tip += L"в эфире: " + status.route; break;
+        case HostStatus::Phase::Paused: tip += L"картинка на паузе"; break;
+        case HostStatus::Phase::Error: tip += status.error; break;
+        default: tip += L"ждём iPhone"; break;
+        }
+        g_app->tray.SetTip(tip.c_str());
         return 0;
     }
     case kPhoneMessage: {
@@ -435,7 +451,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int showCo
     const bool startMinimized = arguments.find(L"--minimized") != std::wstring::npos;
     WSADATA wsa;
     WSAStartup(MAKEWORD(2, 2), &wsa);
-    INITCOMMONCONTROLSEX controls{sizeof(controls), ICC_BAR_CLASSES | ICC_STANDARD_CLASSES};
+    INITCOMMONCONTROLSEX controls{sizeof(controls), ICC_STANDARD_CLASSES};
     InitCommonControlsEx(&controls);
     App app;
     g_app = &app;
@@ -456,23 +472,23 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int showCo
     windowClass.lpszClassName = kWindowClass;
     RegisterClassExW(&windowClass);
 
-    WNDCLASSEXW previewClass{sizeof(previewClass)};
-    previewClass.lpfnWndProc = PreviewProc;
-    previewClass.hInstance = instance;
-    previewClass.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-    previewClass.lpszClassName = kPreviewClass;
-    RegisterClassExW(&previewClass);
-
     const UINT dpi = GetDpiForSystem();
-    RECT frame{0, 0, MulDiv(1280 + ControlPanel::kWidth, dpi, 96), MulDiv(760, dpi, 96)};
+    RECT frame{0, 0, MulDiv(1360, dpi, 96), MulDiv(820, dpi, 96)};
     AdjustWindowRectExForDpi(&frame, WS_OVERLAPPEDWINDOW, FALSE, 0, dpi);
     app.window = CreateWindowExW(0, kWindowClass, L"QBT Camera", WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, CW_USEDEFAULT,
                                  CW_USEDEFAULT, frame.right - frame.left, frame.bottom - frame.top, nullptr, nullptr,
                                  instance, nullptr);
+    // Title bar in the app's own colors, rounded Windows 11 corners.
     const BOOL darkTitleBar = TRUE;
     DwmSetWindowAttribute(app.window, DWMWA_USE_IMMERSIVE_DARK_MODE, &darkTitleBar, sizeof(darkTitleBar));
-    app.preview = CreateWindowExW(0, kPreviewClass, L"", WS_CHILD | WS_VISIBLE, 0, 0, 100, 100, app.window, nullptr,
-                                  instance, nullptr);
+    const COLORREF captionColor = RGB(5, 6, 11);
+    DwmSetWindowAttribute(app.window, DWMWA_CAPTION_COLOR, &captionColor, sizeof(captionColor));
+    const DWM_WINDOW_CORNER_PREFERENCE corners = DWMWCP_ROUND;
+    DwmSetWindowAttribute(app.window, DWMWA_WINDOW_CORNER_PREFERENCE, &corners, sizeof(corners));
+    if (FAILED(app.pipeline.Initialize(app.window))) {
+        MessageBoxW(nullptr, L"Не удалось инициализировать видеокарту (Direct3D 11).", L"QBT Camera", MB_ICONERROR);
+        return 1;
+    }
     app.panel.Create(
         app.window, instance,
         [](const std::string& json) {
@@ -487,12 +503,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int showCo
     RefreshAudioDevices(true);
     SetTimer(app.window, kMeterTimer, 50, nullptr);
     SetTimer(app.window, kDevicesTimer, 3000, nullptr);
-    if (!app.preview || FAILED(app.pipeline.Initialize(app.preview))) {
-        MessageBoxW(nullptr, L"Не удалось инициализировать видеокарту (Direct3D 11).", L"QBT Camera", MB_ICONERROR);
-        return 1;
-    }
 
     app.virtualCameraReady = SUCCEEDED(app.virtualCamera.Start());
+    SetStatus(MakeStatus(HostStatus::Phase::Starting));
     app.tray.Add(app.window, kTrayMessage, app.smallIcon, L"QBT Camera");
     // Cheap localhost query: notices a plugged-in cable within ~1.5 s.
     app.usbWatcher = std::thread([] {

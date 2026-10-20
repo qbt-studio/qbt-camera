@@ -89,7 +89,13 @@ enum CameraControl {
     }
 
     static func state(of device: AVCaptureDevice, lens: CameraLens) -> [String: Any] {
-        let whiteBalance = device.temperatureAndTintValues(for: device.deviceWhiteBalanceGains)
+        // Gains outside 1…max (camera interrupted, torch switching) make AVFoundation throw: clamp first.
+        var gains = device.deviceWhiteBalanceGains
+        let maxGain = device.maxWhiteBalanceGain
+        gains.redGain = gains.redGain.isFinite ? gains.redGain.clamped(1, maxGain) : 1
+        gains.greenGain = gains.greenGain.isFinite ? gains.greenGain.clamped(1, maxGain) : 1
+        gains.blueGain = gains.blueGain.isFinite ? gains.blueGain.clamped(1, maxGain) : 1
+        let whiteBalance = device.temperatureAndTintValues(for: gains)
         return [
             "evt": "state",
             "lens": lens.rawValue,

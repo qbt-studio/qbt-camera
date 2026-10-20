@@ -1,0 +1,197 @@
+// The subnet scan waits on up to 254 sockets in one select().
+#define FD_SETSIZE 512
+#include "PhoneLink.h"
+
+#include <ws2tcpip.h>
+
+#include "../common/Log.h"
+#include "Usbmux.h"
+
+namespace {
+
+bool ReceiveAll(SOCKET socket, void* buffer, size_t size) {
+    auto* data = static_cast<char*>(buffer);
+    while (size > 0) {
+        const int chunk = static_cast<int>(size > (1 << 30) ? (1 << 30) : size);
+        const int received = recv(socket, data, chunk, 0);
+        if (received <= 0) return false;
+        data += received;
+        size -= static_cast<size_t>(received);
+    }
+    return true;
+}
+
+void SetBlocking(SOCKET socket, bool blocking) {
+    u_long nonBlocking = blocking ? 0 : 1;
+    ioctlsocket(socket, FIONBIO, &nonBlocking);
+}
+
+SOCKET ConnectWithTimeout(const std::string& ip, int timeoutMs) {
+    sockaddr_in address{};
+    address.sin_family = AF_INET;
+    address.sin_port = htons(qbt::kVideoPort);
+    if (inet_pton(AF_INET, ip.c_str(), &address.sin_addr) != 1) return INVALID_SOCKET;
+    SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (s == INVALID_SOCKET) return s;
+    SetBlocking(s, false);
+    connect(s, reinterpret_cast<sockaddr*>(&address), sizeof(address));
+    fd_set writable, failed;
+    FD_ZERO(&writable);
+    FD_ZERO(&failed);
+    FD_SET(s, &writable);
+    FD_SET(s, &failed);
+    timeval timeout{timeoutMs / 1000, (timeoutMs % 1000) * 1000};
+    int error = 0;
+    int length = sizeof(error);
+    if (select(0, nullptr, &writable, &failed, &timeout) != 1 || !FD_ISSET(s, &writable) ||
+        getsockopt(s, SOL_SOCKET, SO_ERROR, reinterpret_cast<char*>(&error), &length) != 0 || error != 0) {
+        closesocket(s);
+        return INVALID_SOCKET;
+    }
+    SetBlocking(s, true);
+    return s;
+}
+
+std::string ToString(uint32_t hostOrderAddress) {
+    in_addr address{};
+    address.s_addr = htonl(hostOrderAddress);
+    char text[INET_ADDRSTRLEN] = {};
+    inet_ntop(AF_INET, &address, text, sizeof(text));
+    return text;
+}
+
+// The app sends a keyframe as soon as a client connects, so a valid header identifies it.
+bool LooksLikeQbtCamera(SOCKET s) {
+    DWORD timeout = 1500;
+    setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeout), sizeof(timeout));
+    qbt::PacketHeader header{};
+    return ReceiveAll(s, &header, sizeof(header)) && header.magic == qbt::kPacketMagic;
+}
+
+/// Connects to port 50500 on every host of our /24 network at once and returns the one that speaks our protocol.
+std::string ScanSubnet(const std::atomic<bool>& stop) {
+    SOCKET probe = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    sockaddr_in outside{};
+    outside.sin_family = AF_INET;
+    outside.sin_port = htons(1);
+    inet_pton(AF_INET, "10.255.255.255", &outside.sin_addr); // nothing is sent; this only picks the LAN interface
+    sockaddr_in own{};
+    int ownLength = sizeof(own);
+    const bool haveAddress = connect(probe, reinterpret_cast<sockaddr*>(&outside), sizeof(outside)) == 0 &&
+                             getsockname(probe, reinterpret_cast<sockaddr*>(&own), &ownLength) == 0;
+    closesocket(probe);
+    if (!haveAddress) return {};
+
+    const uint32_t ownAddress = ntohl(own.sin_addr.s_addr);
+    const uint32_t network = ownAddress & 0xFFFFFF00u;
+    std::vector<std::pair<SOCKET, uint32_t>> attempts;
+    fd_set writable;
+    FD_ZERO(&writable);
+    for (uint32_t host = 1; host < 255; ++host) {
+        const uint32_t address = network | host;
+        if (address == ownAddress) continue;
+        SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+        if (s == INVALID_SOCKET) continue;
+        SetBlocking(s, false);
+        sockaddr_in target{};
+        target.sin_family = AF_INET;
+        target.sin_port = htons(qbt::kVideoPort);
+        target.sin_addr.s_addr = htonl(address);
+        connect(s, reinterpret_cast<sockaddr*>(&target), sizeof(target));
+        FD_SET(s, &writable);
+        attempts.emplace_back(s, address);
+    }
+    timeval timeout{0, 600'000};
+    select(0, nullptr, &writable, nullptr, &timeout);
+
+    std::string found;
+    for (auto& [s, address] : attempts) {
+        if (found.empty() && !stop && FD_ISSET(s, &writable)) {
+            int error = 0;
+            int length = sizeof(error);
+            getsockopt(s, SOL_SOCKET, SO_ERROR, reinterpret_cast<char*>(&error), &length);
+            if (error == 0) {
+                SetBlocking(s, true);
+                if (LooksLikeQbtCamera(s)) found = ToString(address);
+            }
+        }
+        closesocket(s);
+    }
+    return found;
+}
+
+std::wstring Widen(const std::string& text) {
+    return std::wstring(text.begin(), text.end()); // ASCII only (IP addresses)
+}
+
+} // namespace
+
+bool PhoneLink::Connect(const std::atomic<bool>& stop, std::wstring& route) {
+    for (const UsbDevice& device : UsbmuxListDevices()) {
+        SOCKET s = UsbmuxConnect(device.id, qbt::kVideoPort);
+        if (s != INVALID_SOCKET) {
+            qbt::Log("link: USB device %d (%s)", device.id, device.serial.c_str());
+            Adopt(s);
+            route = L"USB";
+            return true;
+        }
+    }
+    if (stop) return false;
+
+    if (!lastWifiAddress_.empty()) {
+        SOCKET s = ConnectWithTimeout(lastWifiAddress_, 800);
+        if (s != INVALID_SOCKET) {
+            qbt::Log("link: Wi-Fi %s (remembered)", lastWifiAddress_.c_str());
+            Adopt(s);
+            route = L"Wi-Fi " + Widen(lastWifiAddress_);
+            return true;
+        }
+    }
+    if (stop) return false;
+
+    const std::string found = ScanSubnet(stop);
+    if (found.empty() || stop) return false;
+    SOCKET s = ConnectWithTimeout(found, 1000);
+    if (s == INVALID_SOCKET) return false;
+    qbt::Log("link: Wi-Fi %s (found by scan)", found.c_str());
+    lastWifiAddress_ = found;
+    Adopt(s);
+    route = L"Wi-Fi " + Widen(found);
+    return true;
+}
+
+void PhoneLink::Adopt(SOCKET s) {
+    BOOL noDelay = TRUE;
+    setsockopt(s, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char*>(&noDelay), sizeof(noDelay));
+    int receiveBuffer = 4 * 1024 * 1024;
+    setsockopt(s, SOL_SOCKET, SO_RCVBUF, reinterpret_cast<const char*>(&receiveBuffer), sizeof(receiveBuffer));
+    DWORD timeout = 3000; // the phone sends 30–60 frames a second; silence means the link is gone
+    setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeout), sizeof(timeout));
+    setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&timeout), sizeof(timeout));
+    Close();
+    socket_ = s;
+}
+
+bool PhoneLink::ReadPacket(qbt::PacketHeader& header, std::vector<uint8_t>& payload) {
+    const SOCKET s = socket_;
+    if (s == INVALID_SOCKET || !ReceiveAll(s, &header, sizeof(header))) return false;
+    if (header.magic != qbt::kPacketMagic || header.length > qbt::kMaxPacketBytes) {
+        qbt::Log("link: unexpected data (magic %08x, length %u)", header.magic, header.length);
+        return false;
+    }
+    payload.resize(header.length);
+    return header.length == 0 || ReceiveAll(s, payload.data(), payload.size());
+}
+
+bool PhoneLink::SendAck(uint32_t framesReceived) {
+    const SOCKET s = socket_;
+    const qbt::Ack ack{qbt::kAckMagic, framesReceived};
+    return s != INVALID_SOCKET && send(s, reinterpret_cast<const char*>(&ack), sizeof(ack), 0) == sizeof(ack);
+}
+
+void PhoneLink::Close() {
+    const SOCKET s = socket_.exchange(INVALID_SOCKET);
+    if (s == INVALID_SOCKET) return;
+    shutdown(s, SD_BOTH);
+    closesocket(s);
+}

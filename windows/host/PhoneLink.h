@@ -1,0 +1,27 @@
+#pragma once
+#include <winsock2.h>
+
+#include <atomic>
+#include <string>
+#include <vector>
+
+#include "../common/Protocol.h"
+
+// Connection to the QBT Camera app on the iPhone: USB first (via usbmux), then Wi-Fi.
+class PhoneLink {
+public:
+    /// Tries USB, then the last Wi-Fi address, then a scan of the local /24 network.
+    /// `route` gets a human-readable description ("USB", "Wi-Fi 192.168.1.5").
+    bool Connect(const std::atomic<bool>& stop, std::wstring& route);
+
+    bool ReadPacket(qbt::PacketHeader& header, std::vector<uint8_t>& payload);
+    bool SendAck(uint32_t framesReceived);
+    /// Safe to call from another thread to unblock a pending read.
+    void Close();
+
+private:
+    void Adopt(SOCKET socket);
+
+    std::atomic<SOCKET> socket_{INVALID_SOCKET};
+    std::string lastWifiAddress_;
+};

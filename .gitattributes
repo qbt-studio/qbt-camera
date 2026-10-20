@@ -2,3 +2,6 @@
 ios/** text eol=lf
 *.sh text eol=lf
 *.swift text eol=lf
+# Images are binary: never touch their bytes.
+*.png binary
+*.jpg binary

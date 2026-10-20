@@ -162,7 +162,7 @@ def stream(sock, player):
             raise ConnectionError("неожиданные данные в потоке")
         payload = recv_exact(sock, length)
         if packet_type != TYPE_VIDEO:
-            continue
+            continue  # camera state messages are for the Windows app; only video frames are acked
         player.stdin.write(payload)
         player.stdin.write(ACCESS_UNIT_DELIMITER)
         player.stdin.flush()

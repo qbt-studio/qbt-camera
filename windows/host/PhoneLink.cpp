@@ -183,10 +183,31 @@ bool PhoneLink::ReadPacket(qbt::PacketHeader& header, std::vector<uint8_t>& payl
     return header.length == 0 || ReceiveAll(s, payload.data(), payload.size());
 }
 
-bool PhoneLink::SendAck(uint32_t framesReceived) {
+bool PhoneLink::Send(const void* data, size_t size) {
+    std::lock_guard lock(sendMutex_);
     const SOCKET s = socket_;
+    if (s == INVALID_SOCKET) return false;
+    auto* bytes = static_cast<const char*>(data);
+    while (size > 0) {
+        const int sent = send(s, bytes, static_cast<int>(size), 0);
+        if (sent <= 0) return false;
+        bytes += sent;
+        size -= static_cast<size_t>(sent);
+    }
+    return true;
+}
+
+bool PhoneLink::SendAck(uint32_t framesReceived) {
     const qbt::Ack ack{qbt::kAckMagic, framesReceived};
-    return s != INVALID_SOCKET && send(s, reinterpret_cast<const char*>(&ack), sizeof(ack), 0) == sizeof(ack);
+    return Send(&ack, sizeof(ack));
+}
+
+bool PhoneLink::SendCommand(const std::string& json) {
+    std::string message(sizeof(qbt::Ack), '\0');
+    const qbt::Ack header{qbt::kCommandMagic, static_cast<uint32_t>(json.size())};
+    memcpy(message.data(), &header, sizeof(header));
+    message += json;
+    return Send(message.data(), message.size());
 }
 
 void PhoneLink::Close() {

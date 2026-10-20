@@ -24,6 +24,8 @@ final class StreamServer {
     /// Client description ("USB" or an IP address), nil when disconnected. Called on the server queue.
     var onClientChanged: ((String?) -> Void)?
     var onKeyframeNeeded: (() -> Void)?
+    /// JSON command from the PC. Called on the server queue.
+    var onCommand: ((Data) -> Void)?
 
     var hasClient: Bool { clientLock.withLock { clientConnected } }
 
@@ -93,6 +95,16 @@ final class StreamServer {
         }
     }
 
+    /// Small JSON message to the PC (capabilities, state). Not subject to the frame budget.
+    func sendMessage(_ json: Data) {
+        queue.async { [self] in
+            guard let connection else { return }
+            var packet = QBTProtocol.makeHeader(type: .message, flags: [], payloadLength: json.count, ptsMicros: 0)
+            packet.append(json)
+            connection.send(content: packet, completion: .idempotent)
+        }
+    }
+
     private var framesInFlight: Int { Int(framesSent &- framesAcked) }
 
     private func startListener() {
@@ -131,7 +143,7 @@ final class StreamServer {
             case .ready:
                 self.setClient(Self.describe(newConnection.endpoint))
                 self.onKeyframeNeeded?()
-                self.receiveAcks(newConnection)
+                self.receiveMessages(newConnection)
             case .failed, .cancelled:
                 self.connection = nil
                 self.setClient(nil)
@@ -142,23 +154,43 @@ final class StreamServer {
         newConnection.start(queue: queue)
     }
 
-    private func receiveAcks(_ connection: NWConnection) {
+    /// Reads PC → phone messages: 8-byte acks and length-prefixed JSON commands.
+    private func receiveMessages(_ connection: NWConnection) {
         connection.receive(minimumIncompleteLength: QBTProtocol.ackSize,
                            maximumLength: QBTProtocol.ackSize) { [weak self, weak connection] data, _, isComplete, error in
             guard let self, let connection else { return }
             if let data, data.count == QBTProtocol.ackSize, self.connection === connection {
                 let magic = data.withUnsafeBytes { UInt32(littleEndian: $0.loadUnaligned(fromByteOffset: 0, as: UInt32.self)) }
-                let count = data.withUnsafeBytes { UInt32(littleEndian: $0.loadUnaligned(fromByteOffset: 4, as: UInt32.self)) }
-                guard magic == QBTProtocol.ackMagic else {
+                let value = data.withUnsafeBytes { UInt32(littleEndian: $0.loadUnaligned(fromByteOffset: 4, as: UInt32.self)) }
+                switch magic {
+                case QBTProtocol.ackMagic:
+                    self.handleAck(value)
+                case QBTProtocol.commandMagic where value > 0 && value <= QBTProtocol.maxCommandSize:
+                    self.receiveCommand(connection, length: Int(value))
+                    return
+                default:
                     connection.cancel()
                     return
                 }
-                self.handleAck(count)
             }
             if isComplete || error != nil {
                 connection.cancel()
             } else {
-                self.receiveAcks(connection)
+                self.receiveMessages(connection)
+            }
+        }
+    }
+
+    private func receiveCommand(_ connection: NWConnection, length: Int) {
+        connection.receive(minimumIncompleteLength: length, maximumLength: length) { [weak self, weak connection] data, _, isComplete, error in
+            guard let self, let connection else { return }
+            if let data, data.count == length, self.connection === connection {
+                self.onCommand?(data)
+            }
+            if isComplete || error != nil {
+                connection.cancel()
+            } else {
+                self.receiveMessages(connection)
             }
         }
     }

@@ -1,0 +1,4 @@
+# Files that run or build on the Mac must keep Unix line endings.
+ios/** text eol=lf
+*.sh text eol=lf
+*.swift text eol=lf

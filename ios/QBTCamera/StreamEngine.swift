@@ -1,7 +1,7 @@
 import AVFoundation
 import Combine
 
-/// Wires camera → encoder → server and publishes state for the UI.
+/// Wires camera → encoder → server, applies commands from the PC and publishes state for the UI.
 @MainActor
 final class StreamEngine: ObservableObject {
     @Published private(set) var clientName: String?
@@ -15,9 +15,10 @@ final class StreamEngine: ObservableObject {
     @Published private(set) var errorMessage: String?
     @Published private(set) var wifiAddress: String?
 
-    @Published var position: AVCaptureDevice.Position {
+    @Published var lens: CameraLens {
         didSet {
-            defaults.set(position == .front, forKey: Keys.frontCamera)
+            guard lens != oldValue else { return }
+            defaults.set(lens.rawValue, forKey: Keys.lens)
             applyCameraSettings()
         }
     }
@@ -37,7 +38,7 @@ final class StreamEngine: ObservableObject {
     }
 
     private enum Keys {
-        static let frontCamera = "frontCamera"
+        static let lens = "lens"
         static let resolution = "resolution"
         static let fps = "fps"
         static let orientation = "orientation"
@@ -49,13 +50,15 @@ final class StreamEngine: ObservableObject {
     private let encoder = VideoEncoder()
     private let server = StreamServer(port: QBTProtocol.videoPort)
     private var statsTimer: Timer?
+    private var stateTimer: Timer?
     private var started = false
     private var secondsWithoutDrops = 0
 
     init() {
         // Restore the last used settings.
         let defaults = UserDefaults.standard
-        position = defaults.bool(forKey: Keys.frontCamera) ? .front : .back
+        let savedLens = defaults.string(forKey: Keys.lens).flatMap(CameraLens.init(rawValue:))
+        lens = savedLens.flatMap { CameraLens.available.contains($0) ? $0 : nil } ?? .wide
         let savedFPS = defaults.integer(forKey: Keys.fps)
         preset = StreamPreset(
             resolution: defaults.string(forKey: Keys.resolution).flatMap(StreamResolution.init(rawValue:)) ?? .fullHD,
@@ -64,7 +67,13 @@ final class StreamEngine: ObservableObject {
 
         Self.connectPipeline(camera: camera, encoder: encoder, server: server)
         server.onClientChanged = { [weak self] name in
-            Task { @MainActor in self?.clientName = name }
+            Task { @MainActor in
+                self?.clientName = name
+                if name != nil { self?.sendCapabilities() }
+            }
+        }
+        server.onCommand = { [weak self] data in
+            Task { @MainActor in self?.handleCommand(data) }
         }
         camera.onError = { [weak self] error in
             Task { @MainActor in self?.errorMessage = error.localizedDescription }
@@ -81,6 +90,12 @@ final class StreamEngine: ObservableObject {
             server.send(frame: data, keyframe: keyframe, ptsMicros: ptsMicros)
         }
         server.onKeyframeNeeded = { encoder.requestKeyframe() }
+        // New lens or format: tell the PC what the camera can do now.
+        camera.onConfigured = { device, lens in
+            if let json = CameraControl.encode(CameraControl.capabilities(of: device, lens: lens)) {
+                server.sendMessage(json)
+            }
+        }
     }
 
     func start() {
@@ -101,6 +116,10 @@ final class StreamEngine: ObservableObject {
         statsTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.refreshStats() }
         }
+        // Live values (ISO, shutter, focus…) for the PC's sliders while auto modes adjust them.
+        stateTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.sendState() }
+        }
     }
 
     private func applyCameraSettings() {
@@ -110,7 +129,40 @@ final class StreamEngine: ObservableObject {
         secondsWithoutDrops = 0
         encoder.configure(fps: preset.fps, bitrate: preset.bitrate)
         server.setFrameRate(preset.fps)
-        camera.start(position: position, preset: preset, orientation: orientation)
+        camera.start(lens: lens, preset: preset, orientation: orientation)
+    }
+
+    private func handleCommand(_ data: Data) {
+        guard let command = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let name = command["cmd"] as? String else { return }
+        if name == "lens" {
+            if let value = command["value"] as? String, let lens = CameraLens(rawValue: value),
+               CameraLens.available.contains(lens) {
+                self.lens = lens // reconfigures; capabilities follow via onConfigured
+            }
+            return
+        }
+        camera.withDevice { device in CameraControl.apply(command, to: device) }
+        sendState()
+    }
+
+    private func sendCapabilities() {
+        let server = server
+        camera.readDevice { device, lens in
+            if let json = CameraControl.encode(CameraControl.capabilities(of: device, lens: lens)) {
+                server.sendMessage(json)
+            }
+        }
+    }
+
+    private func sendState() {
+        guard clientName != nil else { return }
+        let server = server
+        camera.readDevice { device, lens in
+            if let json = CameraControl.encode(CameraControl.state(of: device, lens: lens)) {
+                server.sendMessage(json)
+            }
+        }
     }
 
     private func refreshStats() {

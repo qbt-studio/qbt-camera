@@ -6,8 +6,10 @@ namespace qbt {
 
 inline constexpr uint16_t kVideoPort = 50500;
 inline constexpr uint32_t kPacketMagic = 0x56544251; // 'QBTV'
-inline constexpr uint32_t kAckMagic = 0x4B544251;    // 'QBTK'
+inline constexpr uint32_t kAckMagic = 0x4B544251;     // 'QBTK'
+inline constexpr uint32_t kCommandMagic = 0x43544251; // 'QBTC': followed by `value` bytes of JSON
 inline constexpr uint8_t kPacketTypeVideo = 1;
+inline constexpr uint8_t kPacketTypeMessage = 2;      // JSON: {"evt":"caps"|"state", ...}
 inline constexpr uint8_t kFlagKeyframe = 1;
 inline constexpr uint32_t kMaxPacketBytes = 16 * 1024 * 1024;
 
@@ -21,7 +23,8 @@ struct PacketHeader {
     uint64_t ptsMicros; // capture time on the iPhone clock
 };
 
-// Sent back after every frame the PC has taken; the phone caps unacknowledged frames.
+// PC -> phone message header. Ack: value = video frames taken so far (the phone caps
+// unacknowledged frames). Command: value = length of the JSON command that follows.
 struct Ack {
     uint32_t magic;
     uint32_t framesReceived;

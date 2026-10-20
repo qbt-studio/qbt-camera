@@ -95,9 +95,8 @@ struct ContentView: View {
 
     private var settingsCard: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Picker("Камера", selection: $engine.position) {
-                Text("Основная").tag(AVCaptureDevice.Position.back)
-                Text("Фронтальная").tag(AVCaptureDevice.Position.front)
+            Picker("Камера", selection: $engine.lens) {
+                ForEach(CameraLens.available) { Text($0.title).tag($0) }
             }
             .pickerStyle(.segmented)
 

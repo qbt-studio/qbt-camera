@@ -20,11 +20,14 @@ final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     /// Called on the video queue for every captured frame.
     var onFrame: ((CVPixelBuffer, CMTime) -> Void)?
     var onError: ((Error) -> Void)?
+    /// Called on the session queue after every (re)configuration, e.g. to send capabilities to the PC.
+    var onConfigured: ((AVCaptureDevice, CameraLens) -> Void)?
 
     private let sessionQueue = DispatchQueue(label: "qbt.camera.session")
     private let videoQueue = DispatchQueue(label: "qbt.camera.video", qos: .userInteractive)
     private let output = AVCaptureVideoDataOutput()
     private var input: AVCaptureDeviceInput?
+    private var lens = CameraLens.wide
     private var orientation = VideoOrientation.auto
     private var rotationCoordinator: AVCaptureDevice.RotationCoordinator?
     private var rotationObservation: NSKeyValueObservation?
@@ -40,16 +43,40 @@ final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     }
 
     /// Applies camera/quality/orientation and starts the session; safe to call again to reconfigure.
-    func start(position: AVCaptureDevice.Position, preset: StreamPreset, orientation: VideoOrientation) {
+    func start(lens: CameraLens, preset: StreamPreset, orientation: VideoOrientation) {
         sessionQueue.async { [self] in
             self.orientation = orientation
             do {
-                try configure(position: position, preset: preset)
+                try configure(lens: lens, preset: preset)
             } catch {
                 onError?(error)
                 return
             }
             if !session.isRunning { session.startRunning() }
+            if let device = input?.device { onConfigured?(device, lens) }
+        }
+    }
+
+    /// Runs `body` on the session queue with the active device locked for configuration.
+    func withDevice(_ body: @escaping (AVCaptureDevice) -> Void) {
+        sessionQueue.async { [self] in
+            guard let device = input?.device else { return }
+            do {
+                try device.lockForConfiguration()
+            } catch {
+                onError?(error)
+                return
+            }
+            body(device)
+            device.unlockForConfiguration()
+        }
+    }
+
+    /// Runs `body` on the session queue with the active device (read-only access).
+    func readDevice(_ body: @escaping (AVCaptureDevice, CameraLens) -> Void) {
+        sessionQueue.async { [self] in
+            guard let device = input?.device else { return }
+            body(device, lens)
         }
     }
 
@@ -66,10 +93,9 @@ final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         }
     }
 
-    private func configure(position: AVCaptureDevice.Position, preset: StreamPreset) throws {
-        guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: position) else {
-            throw CaptureError.cameraUnavailable
-        }
+    private func configure(lens: CameraLens, preset: StreamPreset) throws {
+        guard let device = lens.device else { throw CaptureError.cameraUnavailable }
+        self.lens = lens
         session.beginConfiguration()
         defer { session.commitConfiguration() }
 

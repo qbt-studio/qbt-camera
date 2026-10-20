@@ -2,6 +2,7 @@
 #include <winsock2.h>
 
 #include <atomic>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -16,12 +17,16 @@ public:
 
     bool ReadPacket(qbt::PacketHeader& header, std::vector<uint8_t>& payload);
     bool SendAck(uint32_t framesReceived);
+    /// JSON command to the phone; callable from any thread.
+    bool SendCommand(const std::string& json);
     /// Safe to call from another thread to unblock a pending read.
     void Close();
 
 private:
     void Adopt(SOCKET socket);
+    bool Send(const void* data, size_t size);
 
     std::atomic<SOCKET> socket_{INVALID_SOCKET};
+    std::mutex sendMutex_; // acks (stream thread) and commands (UI thread) must not interleave
     std::string lastWifiAddress_;
 };

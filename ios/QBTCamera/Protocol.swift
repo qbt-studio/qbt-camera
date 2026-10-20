@@ -13,18 +13,26 @@ import Foundation
 ///
 /// Video payload is one H.264 access unit in Annex B form; keyframes carry SPS/PPS in front.
 ///
-/// The PC answers every received frame with an 8-byte ack: magic 'QBTK' + total frames
-/// received on this connection (UInt32, wrapping). The phone uses it to cap frames in flight.
+/// Message payload (type 2) is a UTF-8 JSON object: camera capabilities ("evt":"caps") or
+/// live state ("evt":"state"), see CameraControl.
+///
+/// PC → phone, each message starts with 8 bytes: UInt32 magic + UInt32 value.
+///   'QBTK' ack:     value = total video frames received on this connection (wrapping);
+///                   the phone uses it to cap frames in flight.
+///   'QBTC' command: value = length of the JSON command that follows ({"cmd": ...}).
 enum QBTProtocol {
     static let videoPort: UInt16 = 50500
     static let bonjourType = "_qbtcam._tcp"
     static let magic: UInt32 = 0x5654_4251 // "QBTV"
     static let ackMagic: UInt32 = 0x4B54_4251 // "QBTK"
+    static let commandMagic: UInt32 = 0x4354_4251 // "QBTC"
     static let headerSize = 20
     static let ackSize = 8
+    static let maxCommandSize = 64 * 1024
 
     enum PacketType: UInt8 {
         case video = 1
+        case message = 2
     }
 
     struct Flags: OptionSet {

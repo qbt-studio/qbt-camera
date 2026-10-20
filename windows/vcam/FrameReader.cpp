@@ -78,6 +78,7 @@ bool FrameReader::CopyLatest(BYTE* destination, LONG pitch, UINT32 width, UINT32
     const ULONGLONG now = GetTickCount64();
     InterlockedExchange64(&header_->consumerHeartbeat, static_cast<LONG64>(now));
     if (now - static_cast<ULONGLONG>(header_->hostHeartbeat) > qbt::kHeartbeatTimeoutMs) return false;
+    if (header_->hostStatus == qbt::kHostPaused) return false;
 
     for (int attempt = 0; attempt < 4; ++attempt) {
         const LONG slot = header_->latestSlot;
@@ -97,4 +98,10 @@ bool FrameReader::CopyLatest(BYTE* destination, LONG pitch, UINT32 width, UINT32
         if (frame.sequence == before) return true;
     }
     return false;
+}
+
+bool FrameReader::HostPaused() {
+    if (!header_) return false;
+    return header_->hostStatus == qbt::kHostPaused &&
+           GetTickCount64() - static_cast<ULONGLONG>(header_->hostHeartbeat) <= qbt::kHeartbeatTimeoutMs;
 }

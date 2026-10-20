@@ -19,15 +19,16 @@ void DrawCenteredText(HDC dc, const wchar_t* text, int fontHeight, int weight, C
 
 } // namespace
 
-void Placeholder::Draw(BYTE* destination, LONG pitch, UINT32 width, UINT32 height) {
-    if (width != width_ || height != height_) Render(width, height);
+void Placeholder::Draw(BYTE* destination, LONG pitch, UINT32 width, UINT32 height, bool paused) {
+    if (width != width_ || height != height_ || paused != paused_) Render(width, height, paused);
     for (UINT32 row = 0; row < height * 3 / 2; ++row)
         memcpy(destination + size_t(row) * pitch, nv12_.data() + size_t(row) * width, width);
 }
 
-void Placeholder::Render(UINT32 width, UINT32 height) {
+void Placeholder::Render(UINT32 width, UINT32 height, bool paused) {
     width_ = width;
     height_ = height;
+    paused_ = paused;
     nv12_.assign(size_t(width) * height * 3 / 2, 0);
     std::vector<BYTE> bgra(size_t(width) * height * 4);
     const int backgroundR = 17, backgroundG = 19, backgroundB = 26;
@@ -52,10 +53,12 @@ void Placeholder::Render(UINT32 width, UINT32 height) {
 
         const int unit = static_cast<int>(height) / 18;
         RECT title{0, static_cast<LONG>(height) / 2 - unit * 2, static_cast<LONG>(width), static_cast<LONG>(height) / 2};
-        DrawCenteredText(dc, L"QBT Camera", unit * 2, FW_SEMIBOLD, RGB(236, 238, 245), title);
+        DrawCenteredText(dc, paused ? L"QBT Camera на паузе" : L"QBT Camera", unit * 2, FW_SEMIBOLD, RGB(236, 238, 245), title);
         RECT hint{0, static_cast<LONG>(height) / 2 + unit / 2, static_cast<LONG>(width),
                   static_cast<LONG>(height) / 2 + unit * 2};
-        DrawCenteredText(dc, L"Откройте QBT Camera на iPhone и на компьютере", unit, FW_NORMAL, RGB(140, 146, 160), hint);
+        DrawCenteredText(dc, paused ? L"Звук идёт. Вернитесь в приложение на iPhone, чтобы включить картинку"
+                                    : L"Откройте QBT Camera на iPhone и на компьютере",
+                         unit, FW_NORMAL, RGB(140, 146, 160), hint);
 
         GdiFlush();
         memcpy(bgra.data(), bits, bgra.size());

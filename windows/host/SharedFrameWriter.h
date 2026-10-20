@@ -16,6 +16,8 @@ public:
     /// Size the app asked for (defaults to 1920x1080).
     void RequestedSize(UINT& width, UINT& height);
     void Write(const uint8_t* nv12, UINT rowPitch, UINT width, UINT height);
+    /// No frames are coming because the phone paused its camera: the camera shows a pause card meanwhile.
+    void KeepAlivePaused();
 
 private:
     bool EnsureOpen();

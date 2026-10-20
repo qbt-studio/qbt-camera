@@ -31,6 +31,9 @@ final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     private let output = AVCaptureVideoDataOutput()
     private var input: AVCaptureDeviceInput?
     private let audioQueue = DispatchQueue(label: "qbt.camera.audio", qos: .userInteractive)
+    // The microphone has its own session: iOS stops the camera session when the app goes to the
+    // background, while an audio-only session keeps running there (background audio mode).
+    private let audioSession = AVCaptureSession()
     private let audioOutput = AVCaptureAudioDataOutput()
     private var audioInput: AVCaptureDeviceInput?
     private var lens = CameraLens.wide
@@ -44,6 +47,8 @@ final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         // Native format of the sensor and the hardware encoder: no conversion anywhere.
         output.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange]
         output.setSampleBufferDelegate(self, queue: videoQueue)
+        // Only the microphone session may own the app's audio session (it keeps running in the background).
+        session.automaticallyConfiguresApplicationAudioSession = false
         NotificationCenter.default.addObserver(self, selector: #selector(sessionRuntimeError),
                                                name: AVCaptureSession.runtimeErrorNotification, object: session)
     }
@@ -66,22 +71,30 @@ final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     /// Adds or removes the microphone. Microphone permission must already be granted.
     func setAudioEnabled(_ enabled: Bool) {
         sessionQueue.async { [self] in
-            session.beginConfiguration()
-            defer { session.commitConfiguration() }
             if enabled {
-                guard audioInput == nil,
-                      let microphone = AVCaptureDevice.default(for: .audio),
-                      let newInput = try? AVCaptureDeviceInput(device: microphone),
-                      session.canAddInput(newInput) else { return }
-                session.addInput(newInput)
-                audioInput = newInput
-                if !session.outputs.contains(audioOutput), session.canAddOutput(audioOutput) {
-                    audioOutput.setSampleBufferDelegate(self, queue: audioQueue)
-                    session.addOutput(audioOutput)
+                if audioInput == nil {
+                    audioSession.beginConfiguration()
+                    if let microphone = AVCaptureDevice.default(for: .audio),
+                       let newInput = try? AVCaptureDeviceInput(device: microphone),
+                       audioSession.canAddInput(newInput) {
+                        audioSession.addInput(newInput)
+                        audioInput = newInput
+                    }
+                    if !audioSession.outputs.contains(audioOutput), audioSession.canAddOutput(audioOutput) {
+                        audioOutput.setSampleBufferDelegate(self, queue: audioQueue)
+                        audioSession.addOutput(audioOutput)
+                    }
+                    audioSession.commitConfiguration()
                 }
-            } else if let audioInput {
-                session.removeInput(audioInput)
-                self.audioInput = nil
+                if audioInput != nil, !audioSession.isRunning { audioSession.startRunning() }
+            } else {
+                if audioSession.isRunning { audioSession.stopRunning() }
+                if let audioInput {
+                    audioSession.beginConfiguration()
+                    audioSession.removeInput(audioInput)
+                    audioSession.commitConfiguration()
+                    self.audioInput = nil
+                }
             }
         }
     }
@@ -119,6 +132,7 @@ final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     func resume() {
         sessionQueue.async { [self] in
             if !session.isRunning && input != nil { session.startRunning() }
+            if !audioSession.isRunning && audioInput != nil { audioSession.startRunning() }
         }
     }
 

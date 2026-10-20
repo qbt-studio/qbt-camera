@@ -20,6 +20,10 @@ final class StreamEngine: ObservableObject {
     @Published private(set) var cameraState = CameraUIState()
     @Published private(set) var thermal = ProcessInfo.ThermalState.nominal
     @Published private(set) var microphoneDenied = false
+    /// App in the background: iOS stops the camera there, so the picture pauses while sound keeps going.
+    @Published private(set) var paused = false
+    /// Short hint that disappears by itself (e.g. why the torch did not turn on).
+    @Published private(set) var notice: String?
 
     @Published var lens: CameraLens {
         didSet {
@@ -98,6 +102,8 @@ final class StreamEngine: ObservableObject {
     private var stateTimer: Timer?
     private var started = false
     private var secondsWithoutDrops = 0
+    private let liveActivity = LiveActivityController()
+    private var noticeTask: Task<Void, Never>?
 
     /// "USB", "Wi-Fi" or a waiting hint, for the status island.
     var connectionLabel: String {
@@ -217,6 +223,7 @@ final class StreamEngine: ObservableObject {
                 self.server.start()
             }
         }
+        liveActivity.start(with: activityState)
         statsTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.refreshStats() }
         }
@@ -229,8 +236,38 @@ final class StreamEngine: ObservableObject {
     /// Back in the foreground: iOS may have stopped the camera session or the listener meanwhile.
     func resume() {
         guard started else { return }
+        paused = false
         server.start()
         camera.resume()
+        refreshState()
+        liveActivity.update(activityState)
+    }
+
+    /// The app went to the background: the camera stops, the microphone and the connection keep running.
+    func pause() {
+        guard started else { return }
+        paused = true
+        refreshState()
+        liveActivity.update(activityState)
+    }
+
+    func showNotice(_ text: String) {
+        notice = text
+        noticeTask?.cancel()
+        noticeTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(3))
+            guard !Task.isCancelled else { return }
+            self?.notice = nil
+        }
+    }
+
+    private var activityState: StreamActivityAttributes.ContentState {
+        StreamActivityAttributes.ContentState(
+            connection: clientName == nil ? "" : connectionLabel,
+            quality: "\(preset.resolution.title) \(preset.fps)",
+            paused: paused,
+            microphone: audioEnabled && !microphoneDenied,
+            latencyMs: roundTripMillis.map { Int($0.rounded()) })
     }
 
     /// One command, from the PC (JSON) or from the phone's own controls — same format.
@@ -328,6 +365,7 @@ final class StreamEngine: ObservableObject {
             "prompterPlaying": prompterPlaying,
             "prompterSpeed": prompterSpeed,
             "blackout": blackout,
+            "paused": paused,
         ]
         extras.merge(Self.dictionary(of: effects.current)) { _, effect in effect }
         camera.readDevice { [weak self] device, lens in
@@ -352,7 +390,8 @@ final class StreamEngine: ObservableObject {
         droppedFrames += stats.dropped
         roundTripMillis = stats.roundTripMillis
         wifiAddress = NetworkInfo.wifiAddress()
-        if clientName != nil { adaptBitrate(droppedFrames: stats.dropped) }
+        if clientName != nil && !paused { adaptBitrate(droppedFrames: stats.dropped) }
+        liveActivity.update(activityState)
     }
 
     /// Back off fast when the link drops frames, recover slowly when it keeps up.

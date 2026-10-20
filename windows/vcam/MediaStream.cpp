@@ -251,7 +251,8 @@ HRESULT MediaStream::DeliverSample(IUnknown* token, UINT32 width, UINT32 height,
     BYTE* bufferStart = nullptr;
     DWORD bufferLength = 0;
     RETURN_IF_FAILED(buffer2d->Lock2DSize(MF2DBuffer_LockFlags_Write, &scanline0, &pitch, &bufferStart, &bufferLength));
-    if (!reader_.CopyLatest(scanline0, pitch, width, height)) placeholder_.Draw(scanline0, pitch, width, height);
+    if (!reader_.CopyLatest(scanline0, pitch, width, height))
+        placeholder_.Draw(scanline0, pitch, width, height, reader_.HostPaused());
     buffer2d->Unlock2D();
     RETURN_IF_FAILED(buffer->SetCurrentLength(bufferLength));
 

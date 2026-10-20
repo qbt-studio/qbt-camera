@@ -15,9 +15,15 @@ struct QBTCameraApp: App {
                     engine.start()
                 }
                 .onChange(of: scenePhase) { _, phase in
-                    guard phase == .active else { return }
-                    UIApplication.shared.isIdleTimerDisabled = true
-                    engine.resume()
+                    switch phase {
+                    case .active:
+                        UIApplication.shared.isIdleTimerDisabled = true
+                        engine.resume()
+                    case .background:
+                        engine.pause()
+                    default:
+                        break
+                    }
                 }
         }
     }

@@ -13,6 +13,7 @@ struct CameraUIState: Equatable {
     var lensPosition = 0.5
     var zoom = 1.0
     var torch = 0.0
+    var torchAvailable = true
 
     var minISO = 50.0
     var maxISO = 3200.0
@@ -47,6 +48,7 @@ struct CameraUIState: Equatable {
         lensPosition = number(state, "lensPosition", lensPosition)
         zoom = number(state, "zoom", 1)
         torch = number(state, "torch", 0)
+        torchAvailable = flag(state, "torchAvailable", true)
 
         minISO = max(1, number(caps, "minISO", minISO))
         maxISO = max(minISO + 1, number(caps, "maxISO", maxISO))

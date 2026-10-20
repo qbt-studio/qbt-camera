@@ -8,6 +8,10 @@
 	<string>QBT Camera передаёт звук с микрофона iPhone на ваш компьютер.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Нужно, чтобы компьютер мог подключиться к iPhone по Wi-Fi.</string>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>audio</string>
+	</array>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_qbtcam._tcp</string>

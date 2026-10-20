@@ -6,17 +6,56 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		A1B2C3D4000000000000002B /* QBTCameraWidgets.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = A1B2C3D40000000000000020 /* QBTCameraWidgets.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		A1B2C3D4000000000000002D /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A1B2C3D4000000000000000A /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A1B2C3D40000000000000024;
+			remoteInfo = QBTCameraWidgets;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		A1B2C3D4000000000000002C /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				A1B2C3D4000000000000002B /* QBTCameraWidgets.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
 /* Begin PBXFileReference section */
 		A1B2C3D40000000000000001 /* QBTCamera.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = QBTCamera.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A1B2C3D40000000000000010 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		A1B2C3D40000000000000020 /* QBTCameraWidgets.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = QBTCameraWidgets.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		A1B2C3D40000000000000023 /* Widgets-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = "Widgets-Info.plist"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		A1B2C3D40000000000000002 /* QBTCamera */ = {isa = PBXFileSystemSynchronizedRootGroup; path = QBTCamera; sourceTree = "<group>"; };
+		A1B2C3D40000000000000021 /* Shared */ = {isa = PBXFileSystemSynchronizedRootGroup; path = Shared; sourceTree = "<group>"; };
+		A1B2C3D40000000000000022 /* QBTCameraWidgets */ = {isa = PBXFileSystemSynchronizedRootGroup; path = QBTCameraWidgets; sourceTree = "<group>"; };
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
 		A1B2C3D40000000000000003 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A1B2C3D40000000000000029 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -30,6 +69,8 @@
 			isa = PBXGroup;
 			children = (
 				A1B2C3D40000000000000002 /* QBTCamera */,
+				A1B2C3D40000000000000022 /* QBTCameraWidgets */,
+				A1B2C3D40000000000000021 /* Shared */,
 				A1B2C3D40000000000000011 /* Config */,
 				A1B2C3D40000000000000005 /* Products */,
 			);
@@ -39,6 +80,7 @@
 			isa = PBXGroup;
 			children = (
 				A1B2C3D40000000000000001 /* QBTCamera.app */,
+				A1B2C3D40000000000000020 /* QBTCameraWidgets.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -47,6 +89,7 @@
 			isa = PBXGroup;
 			children = (
 				A1B2C3D40000000000000010 /* Info.plist */,
+				A1B2C3D40000000000000023 /* Widgets-Info.plist */,
 			);
 			path = Config;
 			sourceTree = "<group>";
@@ -61,13 +104,16 @@
 				A1B2C3D40000000000000008 /* Sources */,
 				A1B2C3D40000000000000003 /* Frameworks */,
 				A1B2C3D40000000000000009 /* Resources */,
+				A1B2C3D4000000000000002C /* Embed Foundation Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				A1B2C3D4000000000000002E /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				A1B2C3D40000000000000002 /* QBTCamera */,
+				A1B2C3D40000000000000021 /* Shared */,
 			);
 			name = QBTCamera;
 			packageProductDependencies = (
@@ -75,6 +121,29 @@
 			productName = QBTCamera;
 			productReference = A1B2C3D40000000000000001 /* QBTCamera.app */;
 			productType = "com.apple.product-type.application";
+		};
+		A1B2C3D40000000000000024 /* QBTCameraWidgets */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A1B2C3D40000000000000025 /* Build configuration list for PBXNativeTarget "QBTCameraWidgets" */;
+			buildPhases = (
+				A1B2C3D40000000000000028 /* Sources */,
+				A1B2C3D40000000000000029 /* Frameworks */,
+				A1B2C3D4000000000000002A /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				A1B2C3D40000000000000022 /* QBTCameraWidgets */,
+				A1B2C3D40000000000000021 /* Shared */,
+			);
+			name = QBTCameraWidgets;
+			packageProductDependencies = (
+			);
+			productName = QBTCameraWidgets;
+			productReference = A1B2C3D40000000000000020 /* QBTCameraWidgets.appex */;
+			productType = "com.apple.product-type.app-extension";
 		};
 /* End PBXNativeTarget section */
 
@@ -87,6 +156,9 @@
 				LastUpgradeCheck = 2710;
 				TargetAttributes = {
 					A1B2C3D40000000000000006 = {
+						CreatedOnToolsVersion = 27.1;
+					};
+					A1B2C3D40000000000000024 = {
 						CreatedOnToolsVersion = 27.1;
 					};
 				};
@@ -107,12 +179,20 @@
 			projectRoot = "";
 			targets = (
 				A1B2C3D40000000000000006 /* QBTCamera */,
+				A1B2C3D40000000000000024 /* QBTCameraWidgets */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
 		A1B2C3D40000000000000009 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A1B2C3D4000000000000002A /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -129,7 +209,22 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		A1B2C3D40000000000000028 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		A1B2C3D4000000000000002E /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = A1B2C3D40000000000000024 /* QBTCameraWidgets */;
+			targetProxy = A1B2C3D4000000000000002D /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		A1B2C3D4000000000000000C /* Debug */ = {
@@ -180,6 +275,7 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Config/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = "QBT Camera";
+				INFOPLIST_KEY_NSSupportsLiveActivities = YES;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UIRequiresFullScreen = YES;
@@ -207,6 +303,7 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Config/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = "QBT Camera";
+				INFOPLIST_KEY_NSSupportsLiveActivities = YES;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UIRequiresFullScreen = YES;
@@ -218,6 +315,54 @@
 				MARKETING_VERSION = 0.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.qbt.camerastudio.P9Z5K52DB3;
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
+		A1B2C3D40000000000000026 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = P9Z5K52DB3;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "Config/Widgets-Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = "QBT Camera";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 0.1;
+				PRODUCT_BUNDLE_IDENTIFIER = com.qbt.camerastudio.P9Z5K52DB3.widgets;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+		A1B2C3D40000000000000027 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = P9Z5K52DB3;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "Config/Widgets-Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = "QBT Camera";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 0.1;
+				PRODUCT_BUNDLE_IDENTIFIER = com.qbt.camerastudio.P9Z5K52DB3.widgets;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = 1;
@@ -241,6 +386,15 @@
 			buildConfigurations = (
 				A1B2C3D4000000000000000C /* Debug */,
 				A1B2C3D4000000000000000D /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A1B2C3D40000000000000025 /* Build configuration list for PBXNativeTarget "QBTCameraWidgets" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A1B2C3D40000000000000026 /* Debug */,
+				A1B2C3D40000000000000027 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

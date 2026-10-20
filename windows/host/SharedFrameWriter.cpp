@@ -62,6 +62,13 @@ void SharedFrameWriter::Write(const uint8_t* nv12, UINT rowPitch, UINT width, UI
     InterlockedIncrement64(&frame.sequence); // even: complete
 
     InterlockedExchange(&header_->latestSlot, slot);
+    InterlockedExchange(&header_->hostStatus, qbt::kHostLive);
     InterlockedExchange64(&header_->hostHeartbeat, static_cast<LONG64>(GetTickCount64()));
     if (frameReady_) SetEvent(frameReady_);
+}
+
+void SharedFrameWriter::KeepAlivePaused() {
+    if (!EnsureOpen()) return;
+    InterlockedExchange(&header_->hostStatus, qbt::kHostPaused);
+    InterlockedExchange64(&header_->hostHeartbeat, static_cast<LONG64>(GetTickCount64()));
 }

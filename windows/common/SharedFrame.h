@@ -38,7 +38,13 @@ struct SharedFrameHeader {
     volatile LONG64 hostHeartbeat;     // GetTickCount64() when the host last wrote a frame
     volatile LONG latestSlot;          // newest complete slot, -1 if none yet
     SharedFrameSlot slots[kSlotCount];
+    // Written by the host (appended later: zero, i.e. live, for older hosts).
+    volatile LONG hostStatus;          // kHostLive or kHostPaused
 };
+
+inline constexpr LONG kHostLive = 0;
+// The phone app is in the background: iOS stops its camera, sound keeps going.
+inline constexpr LONG kHostPaused = 1;
 
 inline constexpr size_t kSharedHeaderBytes = (sizeof(SharedFrameHeader) + 4095) & ~size_t(4095);
 inline constexpr size_t kSharedBytes = kSharedHeaderBytes + kSlotBytes * kSlotCount;

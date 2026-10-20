@@ -104,6 +104,8 @@ enum CameraControl {
             "lensPosition": finite(device.lensPosition),
             "zoom": finite(device.videoZoomFactor),
             "torch": device.torchMode == .on ? finite(device.torchLevel) : 0,
+            // iOS blocks the torch while the phone is hot (like "iPhone needs to cool down" in Camera).
+            "torchAvailable": device.hasTorch && device.isTorchAvailable,
             "thermal": thermalState,
         ]
     }

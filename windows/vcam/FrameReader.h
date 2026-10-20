@@ -16,6 +16,8 @@ public:
     bool WaitForFrame(DWORD timeoutMs);
     /// Copies the newest frame if the host is alive and it matches the requested size.
     bool CopyLatest(BYTE* destination, LONG pitch, UINT32 width, UINT32 height);
+    /// The host is running but the phone paused its camera (app in the background).
+    bool HostPaused();
 
 private:
     bool EnsureOpen();

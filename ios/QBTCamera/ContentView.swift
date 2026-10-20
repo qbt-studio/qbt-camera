@@ -68,6 +68,14 @@ struct ContentView: View {
                         .glass(in: RoundedRectangle(cornerRadius: 16, style: .continuous), tint: Palette.danger.opacity(0.4))
                         .transition(.move(edge: .top).combined(with: .opacity))
                 }
+                if let notice = engine.notice {
+                    Label(notice, systemImage: "info.circle.fill")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .padding(10)
+                        .glass(in: RoundedRectangle(cornerRadius: 16, style: .continuous), tint: Palette.accent.opacity(0.35))
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                }
                 Spacer(minLength: 0)
                 lensRow
                     .offset(y: appeared ? 0 : 80)
@@ -79,6 +87,7 @@ struct ContentView: View {
             .padding(.vertical, 4)
             .animation(Self.spring, value: engine.prompterVisible)
             .animation(Self.spring, value: engine.errorMessage)
+            .animation(Self.spring, value: engine.notice)
 
             if engine.blackout {
                 BlackoutView { setBlackout(false) }
@@ -152,9 +161,16 @@ struct ContentView: View {
             }
             if engine.cameraState.hasTorch {
                 let torchOn = engine.cameraState.torch > 0
-                GlassIconButton(systemImage: torchOn ? "flashlight.on.fill" : "flashlight.off.fill", active: torchOn) {
-                    engine.perform(["cmd": "torch", "value": torchOn ? 0.0 : 0.5])
+                let torchBlocked = !engine.cameraState.torchAvailable && !torchOn
+                GlassIconButton(systemImage: torchOn ? "flashlight.on.fill" : torchBlocked ? "flashlight.slash" : "flashlight.off.fill",
+                                active: torchOn) {
+                    if torchBlocked {
+                        engine.showNotice("Фонарик недоступен: iPhone нагрелся. Дайте ему остыть.")
+                    } else {
+                        engine.perform(["cmd": "torch", "value": torchOn ? 0.0 : 0.5])
+                    }
                 }
+                .opacity(torchBlocked ? 0.55 : 1)
                 .transition(.scale.combined(with: .opacity))
             }
             GlassIconButton(systemImage: "moon.fill") { setBlackout(true) }

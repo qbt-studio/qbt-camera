@@ -12,6 +12,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <thread>
 
 #include "AudioOutput.h"
@@ -118,6 +119,8 @@ void StreamLoop() {
         SetStatus(L"Подключено: " + route);
 
         uint32_t framesReceived = 0;
+        bool phonePaused = false;
+        ULONGLONG pausedKeepAlive = 0;
         int framesShown = 0;
         size_t bytes = 0;
         ULONGLONG windowStart = GetTickCount64();
@@ -128,7 +131,24 @@ void StreamLoop() {
                 break; // reconnect: Connect() tries USB first
             }
             bytes += sizeof(header) + payload.size();
+            if (phonePaused && GetTickCount64() - pausedKeepAlive >= 250) {
+                pausedKeepAlive = GetTickCount64();
+                app.cameraOutput.KeepAlivePaused(); // audio keeps arriving: tell the camera why the picture stopped
+            }
             if (header.type == qbt::kPacketTypeMessage) {
+                const std::string_view text(reinterpret_cast<const char*>(payload.data()), payload.size());
+                if (text.find("\"evt\":\"state\"") != std::string_view::npos) {
+                    const bool paused = text.find("\"paused\":true") != std::string_view::npos;
+                    if (paused != phonePaused) {
+                        phonePaused = paused;
+                        qbt::Log("phone: picture %s", paused ? "paused (app in background)" : "resumed");
+                        if (paused) {
+                            app.pipeline.Present(nullptr);
+                            SetStatus(L"Подключено: " + route + L"\nПриложение на iPhone свёрнуто: картинка на паузе, звук идёт.\n" +
+                                      CameraState(app.cameraOutput.CameraInUse()));
+                        }
+                    }
+                }
                 PostMessageW(app.window, kPhoneMessage, 0,
                              reinterpret_cast<LPARAM>(new std::string(payload.begin(), payload.end())));
                 continue;

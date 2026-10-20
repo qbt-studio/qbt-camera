@@ -19,8 +19,10 @@ struct EffectSettings: Equatable {
     var framing = false
     var filter = ColorFilter.none
     var filterAmount = 1.0
+    /// Flip left-right before sending.
+    var mirror = false
 
-    var isActive: Bool { blur > 0.01 || retouch > 0.01 || framing || filter != .none }
+    var isActive: Bool { blur > 0.01 || retouch > 0.01 || framing || filter != .none || mirror }
 }
 
 /// Real-time effects applied on the phone before encoding: Vision finds people and faces on the
@@ -113,6 +115,9 @@ final class VideoEffects {
             image = frame(image, extent: extent, holdFace: started - lastFaceTime < 2)
         } else {
             framingRect = nil
+        }
+        if settings.mirror {
+            image = image.transformed(by: CGAffineTransform(a: -1, b: 0, c: 0, d: 1, tx: extent.width, ty: 0))
         }
 
         guard let output = makeOutputBuffer(width: width, height: height) else { return pixelBuffer }

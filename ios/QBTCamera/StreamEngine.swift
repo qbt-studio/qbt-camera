@@ -1,7 +1,9 @@
 import AVFoundation
 import Combine
+import UIKit
 
-/// Wires camera → encoder → server, applies commands from the PC and publishes state for the UI.
+/// Wires camera → effects → encoder → server, applies commands from the PC and the phone's own
+/// controls, and publishes state for the UI.
 @MainActor
 final class StreamEngine: ObservableObject {
     @Published private(set) var clientName: String?
@@ -14,8 +16,10 @@ final class StreamEngine: ObservableObject {
     @Published private(set) var targetBitrate = 0
     @Published private(set) var errorMessage: String?
     @Published private(set) var wifiAddress: String?
-    /// Effects chosen on the PC, shown on the phone for reference.
     @Published private(set) var effectSettings = EffectSettings()
+    @Published private(set) var cameraState = CameraUIState()
+    @Published private(set) var thermal = ProcessInfo.ThermalState.nominal
+    @Published private(set) var microphoneDenied = false
 
     @Published var lens: CameraLens {
         didSet {
@@ -46,7 +50,29 @@ final class StreamEngine: ObservableObject {
             applyAudio()
         }
     }
-    @Published private(set) var microphoneDenied = false
+
+    /// Screen blacked out while streaming continues: the display is the biggest heat source on long calls.
+    /// The on-phone preview is off meanwhile to save power.
+    @Published var blackout = false {
+        didSet {
+            guard blackout != oldValue else { return }
+            preview.setEnabled(!blackout)
+        }
+    }
+
+    /// Bottom control panel unfolded (the dock always stays visible).
+    @Published var panelExpanded = true
+
+    // Teleprompter near the front lens: read your script while looking into the camera.
+    @Published var prompterVisible = false
+    @Published var prompterPlaying = true
+    @Published var prompterText: String {
+        didSet { defaults.set(prompterText, forKey: Keys.prompterText) }
+    }
+    /// 1 (slow) … 5 (fast).
+    @Published var prompterSpeed: Double {
+        didSet { defaults.set(prompterSpeed, forKey: Keys.prompterSpeed) }
+    }
 
     private enum Keys {
         static let lens = "lens"
@@ -55,11 +81,15 @@ final class StreamEngine: ObservableObject {
         static let orientation = "orientation"
         static let effects = "effects"
         static let audio = "audio"
+        static let prompterText = "prompterText"
+        static let prompterSpeed = "prompterSpeed"
     }
 
     private let defaults = UserDefaults.standard
 
     let camera = CameraCapture()
+    let preview = PreviewSink()
+    let audioMeter = AudioMeter()
     private let effects = VideoEffects()
     private let resampler = AudioResampler()
     private let encoder = VideoEncoder()
@@ -68,6 +98,12 @@ final class StreamEngine: ObservableObject {
     private var stateTimer: Timer?
     private var started = false
     private var secondsWithoutDrops = 0
+
+    /// "USB", "Wi-Fi" or a waiting hint, for the status island.
+    var connectionLabel: String {
+        guard let clientName else { return "Ожидание ПК" }
+        return clientName == "USB" ? "USB" : "Wi-Fi"
+    }
 
     init() {
         // Restore the last used settings.
@@ -80,13 +116,17 @@ final class StreamEngine: ObservableObject {
             fps: StreamPreset.frameRates.contains(savedFPS) ? savedFPS : 30)
         orientation = defaults.string(forKey: Keys.orientation).flatMap(VideoOrientation.init(rawValue:)) ?? .auto
         audioEnabled = defaults.object(forKey: Keys.audio) as? Bool ?? true
+        prompterText = defaults.string(forKey: Keys.prompterText)
+            ?? "Привет! Это суфлёр QBT Camera. Текст прокручивается у самого объектива — читайте его и смотрите прямо в камеру. Изменить текст: кнопка с карандашом."
+        let savedSpeed = defaults.double(forKey: Keys.prompterSpeed)
+        prompterSpeed = savedSpeed > 0 ? savedSpeed : 2
         if let saved = defaults.dictionary(forKey: Keys.effects) {
             effectSettings = Self.effectSettings(from: saved, base: EffectSettings())
             effects.update(effectSettings)
         }
 
-        Self.connectPipeline(camera: camera, effects: effects, encoder: encoder, server: server)
-        Self.connectAudio(camera: camera, resampler: resampler, server: server)
+        Self.connectPipeline(camera: camera, effects: effects, preview: preview, encoder: encoder, server: server)
+        Self.connectAudio(camera: camera, resampler: resampler, meter: audioMeter, server: server)
         server.onClientChanged = { [weak self] name in
             Task { @MainActor in
                 self?.clientName = name
@@ -102,11 +142,15 @@ final class StreamEngine: ObservableObject {
     }
 
     /// Nonisolated so these per-frame closures are not tied to the main actor.
-    private nonisolated static func connectPipeline(camera: CameraCapture, effects: VideoEffects,
+    private nonisolated static func connectPipeline(camera: CameraCapture, effects: VideoEffects, preview: PreviewSink,
                                                    encoder: VideoEncoder, server: StreamServer) {
         camera.onFrame = { pixelBuffer, pts in
-            guard server.hasClient else { return } // don't burn battery encoding for nobody
-            encoder.encode(effects.process(pixelBuffer), pts: pts)
+            let streaming = server.hasClient
+            let previewing = preview.isEnabled
+            guard streaming || previewing else { return } // screen off and nobody watching: do nothing
+            let output = effects.process(pixelBuffer)
+            if previewing { preview.show(output, pts: pts) }
+            if streaming { encoder.encode(output, pts: pts) }
         }
         encoder.onEncodedFrame = { data, keyframe, ptsMicros in
             server.send(frame: data, keyframe: keyframe, ptsMicros: ptsMicros)
@@ -120,9 +164,12 @@ final class StreamEngine: ObservableObject {
         }
     }
 
-    private nonisolated static func connectAudio(camera: CameraCapture, resampler: AudioResampler, server: StreamServer) {
+    private nonisolated static func connectAudio(camera: CameraCapture, resampler: AudioResampler, meter: AudioMeter,
+                                                server: StreamServer) {
         camera.onAudio = { sampleBuffer in
-            guard server.hasClient, let pcm = resampler.convert(sampleBuffer) else { return }
+            guard let pcm = resampler.convert(sampleBuffer) else { return }
+            meter.record(pcm)
+            guard server.hasClient else { return }
             let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
             server.sendAudio(pcm, ptsMicros: pts.isValid ? UInt64(max(0, pts.seconds) * 1_000_000) : 0)
         }
@@ -144,18 +191,20 @@ final class StreamEngine: ObservableObject {
         if let framing = values["framing"] as? Bool { settings.framing = framing }
         if let filter = (values["filter"] as? String).flatMap(ColorFilter.init(rawValue:)) { settings.filter = filter }
         if let amount = values["filterAmount"] as? NSNumber { settings.filterAmount = amount.doubleValue.clamped(0, 1) }
+        if let mirror = values["mirror"] as? Bool { settings.mirror = mirror }
         return settings
     }
 
     private nonisolated static func dictionary(of settings: EffectSettings) -> [String: Any] {
         ["blur": settings.blur, "retouch": settings.retouch, "framing": settings.framing,
-         "filter": settings.filter.rawValue, "filterAmount": settings.filterAmount]
+         "filter": settings.filter.rawValue, "filterAmount": settings.filterAmount, "mirror": settings.mirror]
     }
 
     func start() {
         guard !started else { return }
         started = true
         wifiAddress = NetworkInfo.wifiAddress()
+        audioMeter.start()
         AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
             Task { @MainActor in
                 guard let self else { return }
@@ -171,9 +220,9 @@ final class StreamEngine: ObservableObject {
         statsTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.refreshStats() }
         }
-        // Live values (ISO, shutter, focus…) for the PC's sliders while auto modes adjust them.
+        // Live values (ISO, shutter, focus…) for the sliders here and on the PC.
         stateTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.sendState() }
+            Task { @MainActor in self?.refreshState() }
         }
     }
 
@@ -182,6 +231,48 @@ final class StreamEngine: ObservableObject {
         guard started else { return }
         server.start()
         camera.resume()
+    }
+
+    /// One command, from the PC (JSON) or from the phone's own controls — same format.
+    func perform(_ command: [String: Any]) {
+        guard let name = command["cmd"] as? String else { return }
+        switch name {
+        case "lens":
+            if let value = command["value"] as? String, let lens = CameraLens(rawValue: value),
+               CameraLens.available.contains(lens) {
+                self.lens = lens // reconfigures; capabilities follow via onConfigured
+            }
+        case "audio":
+            if let enabled = command["enabled"] as? Bool { audioEnabled = enabled }
+        case "screen":
+            if let value = command["blackout"] as? Bool { blackout = value }
+            if let value = command["panel"] as? Bool { panelExpanded = value }
+        case "orientation":
+            if let value = (command["value"] as? String).flatMap(VideoOrientation.init(rawValue:)) { orientation = value }
+        case "preset":
+            var updated = preset
+            if let resolution = (command["resolution"] as? String).flatMap(StreamResolution.init(rawValue:)) {
+                updated.resolution = resolution
+            }
+            if let fps = (command["fps"] as? NSNumber)?.intValue, StreamPreset.frameRates.contains(fps) { updated.fps = fps }
+            preset = updated
+        case "effects":
+            updateEffects(Self.effectSettings(from: command, base: effectSettings))
+        case "prompter":
+            if let text = command["text"] as? String { prompterText = text }
+            if let visible = command["visible"] as? Bool { prompterVisible = visible }
+            if let playing = command["playing"] as? Bool { prompterPlaying = playing }
+            if let speed = command["speed"] as? NSNumber { prompterSpeed = speed.doubleValue.clamped(1, 5) }
+        default:
+            camera.withDevice { device in CameraControl.apply(command, to: device) }
+        }
+        refreshState()
+    }
+
+    func updateEffects(_ settings: EffectSettings) {
+        effectSettings = settings
+        effects.update(settings)
+        defaults.set(Self.dictionary(of: settings), forKey: Keys.effects)
     }
 
     private func applyCameraSettings() {
@@ -205,35 +296,14 @@ final class StreamEngine: ObservableObject {
                 guard let self, self.audioEnabled else { return }
                 self.microphoneDenied = !granted
                 self.camera.setAudioEnabled(granted)
-                self.sendState()
+                self.refreshState()
             }
         }
     }
 
     private func handleCommand(_ data: Data) {
-        guard let command = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-              let name = command["cmd"] as? String else { return }
-        if name == "lens" {
-            if let value = command["value"] as? String, let lens = CameraLens(rawValue: value),
-               CameraLens.available.contains(lens) {
-                self.lens = lens // reconfigures; capabilities follow via onConfigured
-            }
-            return
-        }
-        if name == "audio" {
-            if let enabled = command["enabled"] as? Bool { audioEnabled = enabled }
-            sendState()
-            return
-        }
-        if name == "effects" {
-            effectSettings = Self.effectSettings(from: command, base: effectSettings)
-            effects.update(effectSettings)
-            defaults.set(Self.dictionary(of: effectSettings), forKey: Keys.effects)
-            sendState()
-            return
-        }
-        camera.withDevice { device in CameraControl.apply(command, to: device) }
-        sendState()
+        guard let command = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return }
+        perform(command)
     }
 
     private func sendCapabilities() {
@@ -245,18 +315,30 @@ final class StreamEngine: ObservableObject {
         }
     }
 
-    private func sendState() {
-        guard clientName != nil else { return }
+    /// Reads the camera once: updates the phone's controls and, when connected, the PC's.
+    private func refreshState() {
+        thermal = ProcessInfo.processInfo.thermalState
         let server = server
         let effects = effects
-        let audioOn = audioEnabled && !microphoneDenied
-        let microphoneDenied = microphoneDenied
-        camera.readDevice { device, lens in
+        let connected = clientName != nil
+        var extras: [String: Any] = [
+            "audioEnabled": audioEnabled && !microphoneDenied,
+            "microphoneDenied": microphoneDenied,
+            "prompterVisible": prompterVisible,
+            "prompterPlaying": prompterPlaying,
+            "prompterSpeed": prompterSpeed,
+            "blackout": blackout,
+        ]
+        extras.merge(Self.dictionary(of: effects.current)) { _, effect in effect }
+        camera.readDevice { [weak self] device, lens in
             var state = CameraControl.state(of: device, lens: lens)
-            state.merge(Self.dictionary(of: effects.current)) { _, effect in effect }
+            let ui = CameraUIState(state: state, caps: CameraControl.capabilities(of: device, lens: lens))
+            Task { @MainActor in
+                if self?.cameraState != ui { self?.cameraState = ui }
+            }
+            guard connected else { return }
+            state.merge(extras) { _, extra in extra }
             state["effectsMs"] = effects.current.isActive ? effects.lastProcessingMillis : 0
-            state["audioEnabled"] = audioOn
-            state["microphoneDenied"] = microphoneDenied
             if let json = CameraControl.encode(state) {
                 server.sendMessage(json)
             }

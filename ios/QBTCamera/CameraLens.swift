@@ -13,10 +13,19 @@ enum CameraLens: String, CaseIterable, Identifiable {
         switch self {
         case .ultraWide: "0.5×"
         case .wide: "1×"
-        case .telephoto: "Теле"
+        case .telephoto: Self.telephotoTitle
         case .front: "Фронт"
         }
     }
+
+    /// "3×" on a 14 Pro, "5×" on a 15 Pro Max: derived from where the triple camera switches lenses.
+    private static let telephotoTitle: String = {
+        guard let triple = AVCaptureDevice.default(.builtInTripleCamera, for: .video, position: .back) else { return "Теле" }
+        let switchOvers = triple.virtualDeviceSwitchOverVideoZoomFactors.map(\.doubleValue)
+        guard switchOvers.count >= 2, let wide = switchOvers.first, wide > 0, let tele = switchOvers.last else { return "Теле" }
+        let factor = tele / wide
+        return factor.rounded() == factor ? "\(Int(factor))×" : String(format: "%.1f×", factor)
+    }()
 
     var device: AVCaptureDevice? {
         switch self {

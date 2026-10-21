@@ -56,10 +56,10 @@ enum VideoOrientation: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .auto: "Авто"
-        case .landscape: "Горизонтально"
-        case .landscapeFlipped: "Горизонтально, перевёрнуто"
-        case .portrait: "Вертикально"
+        case .auto: "Auto"
+        case .landscape: "Landscape"
+        case .landscapeFlipped: "Landscape, flipped"
+        case .portrait: "Portrait"
         }
     }
 

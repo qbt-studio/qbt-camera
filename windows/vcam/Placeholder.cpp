@@ -53,11 +53,11 @@ void Placeholder::Render(UINT32 width, UINT32 height, bool paused) {
 
         const int unit = static_cast<int>(height) / 18;
         RECT title{0, static_cast<LONG>(height) / 2 - unit * 2, static_cast<LONG>(width), static_cast<LONG>(height) / 2};
-        DrawCenteredText(dc, paused ? L"QBT Camera на паузе" : L"QBT Camera", unit * 2, FW_SEMIBOLD, RGB(236, 238, 245), title);
+        DrawCenteredText(dc, paused ? L"QBT Camera paused" : L"QBT Camera", unit * 2, FW_SEMIBOLD, RGB(236, 238, 245), title);
         RECT hint{0, static_cast<LONG>(height) / 2 + unit / 2, static_cast<LONG>(width),
                   static_cast<LONG>(height) / 2 + unit * 2};
-        DrawCenteredText(dc, paused ? L"Звук идёт. Вернитесь в приложение на iPhone, чтобы включить картинку"
-                                    : L"Откройте QBT Camera на iPhone и на компьютере",
+        DrawCenteredText(dc, paused ? L"Open QBT Camera on your iPhone to continue"
+                                    : L"Open QBT Camera on your iPhone and your computer",
                          unit, FW_NORMAL, RGB(140, 146, 160), hint);
 
         GdiFlush();

@@ -7,8 +7,8 @@ enum CaptureError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .cameraUnavailable: "Камера недоступна."
-        case .cannotAddInput, .cannotAddOutput: "Не удалось настроить камеру."
+        case .cameraUnavailable: "Camera unavailable."
+        case .cannotAddInput, .cannotAddOutput: "Couldn't set up the camera."
         }
     }
 }
@@ -132,6 +132,14 @@ final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         sessionQueue.async { [self] in
             self.orientation = orientation
             applyRotation(orientation.fixedAngle ?? rotationCoordinator?.videoRotationAngleForHorizonLevelCapture ?? 0)
+        }
+    }
+
+    /// Camera and microphone off (the app went to the background); resume() turns them back on.
+    func stop() {
+        sessionQueue.async { [self] in
+            if session.isRunning { session.stopRunning() }
+            if audioSession.isRunning { audioSession.stopRunning() }
         }
     }
 

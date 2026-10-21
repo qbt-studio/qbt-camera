@@ -219,7 +219,7 @@ private:
     bool connected_ = false;
     std::string lens_;
     bool lensAvailable_[4] = {};
-    std::wstring teleTitle_ = L"Теле";
+    std::wstring teleTitle_ = L"Tele";
     bool manualExposure_ = false, manualWhiteBalance_ = false, manualFocus_ = false, hasTorch_ = false;
     bool torchAvailable_ = true;
     double minIso_ = 50, maxIso_ = 3200, minZoom_ = 1, maxZoom_ = 10, minBias_ = -2, maxBias_ = 2;

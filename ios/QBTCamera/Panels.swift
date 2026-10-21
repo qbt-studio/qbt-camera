@@ -75,9 +75,9 @@ struct ExposurePanel: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                SectionCaption(title: "Экспозиция", systemImage: "camera.aperture")
+                SectionCaption(title: "Exposure", systemImage: "camera.aperture")
                 Spacer()
-                GlassChip(title: state.exposureAuto ? "Авто" : "Фикс",
+                GlassChip(title: state.exposureAuto ? "Auto" : "Lock",
                           systemImage: state.exposureAuto ? "a.circle.fill" : "lock.fill",
                           active: !state.exposureAuto) { toggleExposureLock() }
                     .disabled(!state.manualExposure)
@@ -85,7 +85,7 @@ struct ExposurePanel: View {
 
             Group {
             if state.exposureAuto {
-                ValueSlider(title: "Яркость", systemImage: "plusminus.circle.fill", value: state.bias,
+                ValueSlider(title: "Brightness", systemImage: "plusminus.circle.fill", value: state.bias,
                             range: state.minBias...state.maxBias, format: { String(format: "%+.1f EV", $0) }) {
                     engine.perform(["cmd": "exposureBias", "value": $0])
                 }
@@ -112,7 +112,7 @@ struct ExposurePanel: View {
                     engine.perform(["cmd": "exposureManual", "iso": isoAt($0), "shutterUs": state.shutterMicros])
                 }
                 .disabled(!state.manualExposure)
-                ValueSlider(title: "Свет", systemImage: "thermometer.medium", tint: .cyan, value: state.kelvin,
+                ValueSlider(title: "Light", systemImage: "thermometer.medium", tint: .cyan, value: state.kelvin,
                             range: 2500...8000, format: { "\(Int($0)) K" }, locked: !state.whiteBalanceAuto,
                             onLockTap: toggleWhiteBalanceLock) {
                     engine.perform(["cmd": "wbManual", "kelvin": $0, "tint": state.tint])
@@ -120,7 +120,7 @@ struct ExposurePanel: View {
                 .disabled(!state.manualWhiteBalance)
             }
 
-            ValueSlider(title: state.focusAuto ? "Фокус · авто" : "Фокус", systemImage: "scope", tint: Palette.live,
+            ValueSlider(title: state.focusAuto ? "Focus · auto" : "Focus", systemImage: "scope", tint: Palette.live,
                         value: state.lensPosition, range: 0...1, format: { "\(Int($0 * 100))%" },
                         locked: !state.focusAuto, onLockTap: toggleFocusLock) {
                 engine.perform(["cmd": "focusManual", "lensPosition": $0])
@@ -174,13 +174,13 @@ struct ColorPanel: View {
     @EnvironmentObject private var engine: StreamEngine
 
     private let filters: [(ColorFilter, String)] = [
-        (.none, "Нет"), (.cinema, "Кино"), (.warm, "Тёплый"), (.cool, "Холодный"),
-        (.vivid, "Яркий"), (.soft, "Мягкий"), (.mono, "Ч/Б"), (.noir, "Нуар"),
+        (.none, "None"), (.cinema, "Cinema"), (.warm, "Warm"), (.cool, "Cool"),
+        (.vivid, "Vivid"), (.soft, "Soft"), (.mono, "Mono"), (.noir, "Noir"),
     ]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            SectionCaption(title: "Цвет", systemImage: "sparkles")
+            SectionCaption(title: "Color", systemImage: "sparkles")
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 6) {
                     ForEach(filters, id: \.0) { filter, title in
@@ -192,7 +192,7 @@ struct ColorPanel: View {
                     }
                 }
             }
-            ValueSlider(title: "Сила", systemImage: "dial.medium.fill", value: engine.effectSettings.filterAmount,
+            ValueSlider(title: "Strength", systemImage: "dial.medium.fill", value: engine.effectSettings.filterAmount,
                         range: 0...1, format: { "\(Int($0 * 100))%" }) { amount in
                 var settings = engine.effectSettings
                 settings.filterAmount = amount
@@ -220,7 +220,7 @@ struct BackgroundPanel: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                SectionCaption(title: "Фон", systemImage: "person.and.background.dotted")
+                SectionCaption(title: "Background", systemImage: "person.and.background.dotted")
                 Spacer()
                 if settings.background == .portrait || settings.background == .replace {
                     Text(engine.depthLabel)
@@ -241,32 +241,32 @@ struct BackgroundPanel: View {
 
             switch settings.background {
             case .portrait:
-                ValueSlider(title: "Размытие", systemImage: "camera.aperture", tint: .purple, value: settings.blur,
+                ValueSlider(title: "Blur", systemImage: "camera.aperture", tint: .purple, value: settings.blur,
                             range: 0...1, format: { "\(Int($0 * 100))%" }) { value in change { $0.blur = value } }
             case .replace:
                 backdrops
             case .chroma:
                 backdrops
-                ValueSlider(title: "Чувствительность", systemImage: "drop.halffull", tint: .green, value: settings.keySensitivity,
+                ValueSlider(title: "Sensitivity", systemImage: "drop.halffull", tint: .green, value: settings.keySensitivity,
                             range: 0...1, format: { "\(Int($0 * 100))%" }) { value in change { $0.keySensitivity = value } }
-                ValueSlider(title: "Мягкость края", systemImage: "circle.dotted", tint: .green, value: settings.keySoftness,
+                ValueSlider(title: "Edge softness", systemImage: "circle.dotted", tint: .green, value: settings.keySoftness,
                             range: 0...1, format: { "\(Int($0 * 100))%" }) { value in change { $0.keySoftness = value } }
-                ValueSlider(title: "Убрать отсвет", systemImage: "sparkles", tint: .green, value: settings.keySpill,
+                ValueSlider(title: "Remove spill", systemImage: "sparkles", tint: .green, value: settings.keySpill,
                             range: 0...1, format: { "\(Int($0 * 100))%" }) { value in change { $0.keySpill = value } }
-                GlassChip(title: "Определить цвет фона", systemImage: "eyedropper") { engine.resampleKeyColor() }
+                GlassChip(title: "Detect screen color", systemImage: "eyedropper") { engine.resampleKeyColor() }
             case .off:
                 EmptyView()
             }
 
             HStack {
-                SectionCaption(title: "Лицо", systemImage: "face.smiling")
+                SectionCaption(title: "Face", systemImage: "face.smiling")
                 Spacer()
-                GlassChip(title: "Слежение", systemImage: "person.crop.rectangle", active: settings.framing) {
+                GlassChip(title: "Tracking", systemImage: "person.crop.rectangle", active: settings.framing) {
                     change { $0.framing.toggle() }
                 }
             }
-            ValueSlider(title: "Ретушь кожи", systemImage: "face.smiling", tint: .pink, value: settings.retouch,
-                        range: 0...1, format: { $0 < 0.01 ? "выкл" : "\(Int($0 * 100))%" }) { value in change { $0.retouch = value } }
+            ValueSlider(title: "Skin smoothing", systemImage: "face.smiling", tint: .pink, value: settings.retouch,
+                        range: 0...1, format: { $0 < 0.01 ? "off" : "\(Int($0 * 100))%" }) { value in change { $0.retouch = value } }
         }
     }
 
@@ -290,7 +290,7 @@ struct StreamPanel: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            SectionCaption(title: "Поток", systemImage: "bolt.fill")
+            SectionCaption(title: "Stream", systemImage: "bolt.fill")
             HStack(spacing: 6) {
                 ForEach(StreamResolution.allCases) { resolution in
                     GlassChip(title: resolution.title, active: engine.preset.resolution == resolution) {
@@ -299,34 +299,34 @@ struct StreamPanel: View {
                 }
                 Spacer(minLength: 0)
                 ForEach(StreamPreset.frameRates, id: \.self) { fps in
-                    GlassChip(title: "\(fps) к/с", active: engine.preset.fps == fps) { engine.preset.fps = fps }
+                    GlassChip(title: "\(fps) fps", active: engine.preset.fps == fps) { engine.preset.fps = fps }
                 }
             }
 
             HStack(spacing: 10) {
-                GlassChip(title: "Микрофон", systemImage: engine.audioEnabled ? "mic.fill" : "mic.slash.fill",
+                GlassChip(title: "Microphone", systemImage: engine.audioEnabled ? "mic.fill" : "mic.slash.fill",
                           active: engine.audioEnabled) { engine.audioEnabled.toggle() }
                 AudioLevelBar(meter: engine.audioMeter)
             }
             if engine.microphoneDenied {
-                Text("Нет доступа к микрофону: Настройки → QBT Camera → Микрофон.")
+                Text("No microphone access: Settings → QBT Camera → Microphone.")
                     .font(.system(size: 11))
                     .foregroundStyle(Palette.danger)
             }
 
             VStack(spacing: 5) {
-                infoRow("Подключение", engine.clientName.map { $0 == "USB" ? "USB-кабель" : "Wi-Fi" } ?? "ожидание компьютера")
-                infoRow("Адрес в Wi-Fi", engine.wifiAddress.map { "\($0) : \(QBTProtocol.videoPort)" } ?? "нет Wi-Fi")
+                infoRow("Connection", engine.clientName.map { $0 == "USB" ? "USB cable" : "Wi-Fi" } ?? "waiting for computer")
+                infoRow("Wi-Fi address", engine.wifiAddress.map { "\($0) : \(QBTProtocol.videoPort)" } ?? "no Wi-Fi")
                 if engine.clientName != nil {
-                    infoRow("Поток", String(format: "%d к/с · %.1f Мбит/с", engine.fps, engine.megabitsPerSecond))
+                    infoRow("Stream", String(format: "%d fps · %.1f Mbps", engine.fps, engine.megabitsPerSecond))
                     if let roundTrip = engine.roundTripMillis {
-                        infoRow("Задержка сети", String(format: "%.0f мс", roundTrip))
+                        infoRow("Network latency", String(format: "%.0f ms", roundTrip))
                     }
                     if engine.targetBitrate < engine.preset.bitrate {
-                        infoRow("Качество под сеть", "\(engine.targetBitrate / 1_000_000) из \(engine.preset.bitrate / 1_000_000) Мбит/с")
+                        infoRow("Adaptive quality", "\(engine.targetBitrate / 1_000_000) of \(engine.preset.bitrate / 1_000_000) Mbps")
                     }
                 }
-                infoRow("Нагрев", engine.thermal.title, color: engine.thermal.color)
+                infoRow("Heat", engine.thermal.title, color: engine.thermal.color)
             }
             .padding(10)
             .background(.black.opacity(0.28), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
@@ -369,10 +369,10 @@ extension ProcessInfo.ThermalState {
     /// iOS reports a level, not degrees.
     var title: String {
         switch self {
-        case .nominal: "в норме"
-        case .fair: "тёплый"
-        case .serious: "горячий"
-        case .critical: "перегрев"
+        case .nominal: "normal"
+        case .fair: "warm"
+        case .serious: "hot"
+        case .critical: "overheating"
         @unknown default: "—"
         }
     }

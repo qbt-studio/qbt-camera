@@ -53,6 +53,17 @@ final class StreamServer {
         queue.async { self.startListener() }
     }
 
+    /// The app is leaving the screen: drop the PC and stop advertising (start() brings both back).
+    func stop() {
+        queue.async { [self] in
+            connection?.cancel()
+            connection = nil
+            listener?.cancel()
+            listener = nil
+            setClient(nil)
+        }
+    }
+
     /// About 100 ms of video may be in flight: enough to cover Wi-Fi round trips, too little to feel.
     func setFrameRate(_ fps: Int) {
         queue.async { self.frameBudget = max(3, fps / 10) }

@@ -16,10 +16,10 @@ enum BackgroundMode: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .off: "Выкл"
-        case .portrait: "Портрет"
-        case .replace: "Замена"
-        case .chroma: "Хромакей"
+        case .off: "Off"
+        case .portrait: "Portrait"
+        case .replace: "Replace"
+        case .chroma: "Chroma key"
         }
     }
 }
@@ -31,12 +31,12 @@ enum Backdrop: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .studio: "Студия"
+        case .studio: "Studio"
         case .glow: "QBT"
-        case .warm: "Тёплый"
-        case .white: "Белый"
-        case .black: "Чёрный"
-        case .green: "Зелёный для OBS"
+        case .warm: "Warm"
+        case .white: "White"
+        case .black: "Black"
+        case .green: "Green for OBS"
         }
     }
 }

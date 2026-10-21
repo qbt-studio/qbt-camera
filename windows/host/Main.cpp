@@ -107,7 +107,7 @@ void StreamLoop() {
     if (FAILED(decoder.Initialize(app.pipeline.Device())) || FAILED(auxDecoder.Initialize(app.pipeline.Device()))) {
         HostStatus status;
         status.phase = HostStatus::Phase::Error;
-        status.error = L"Аппаратный декодер H.264 недоступен";
+        status.error = L"Hardware H.264 decoder unavailable";
         SetStatus(status);
         CoUninitialize();
         return;
@@ -117,7 +117,7 @@ void StreamLoop() {
     std::vector<uint8_t> payload;
     ULONGLONG usbRetryAfter = 0;
     while (!app.stop) {
-        app.pipeline.SetIdleMessage(L"Ждём iPhone", L"Откройте QBT Camera на телефоне — подключение по USB или Wi-Fi");
+        app.pipeline.SetIdleMessage(L"Waiting for iPhone", L"Open QBT Camera on your iPhone — connects over USB or Wi-Fi");
         app.pipeline.Present(nullptr);
         SetStatus(MakeStatus(HostStatus::Phase::Searching));
         std::wstring route;
@@ -160,8 +160,8 @@ void StreamLoop() {
                         phonePaused = paused;
                         qbt::Log("phone: picture %s", paused ? "paused (app in background)" : "resumed");
                         if (paused) {
-                            app.pipeline.SetIdleMessage(L"Картинка на паузе",
-                                                        L"Приложение на iPhone свёрнуто. Звук продолжает идти.");
+                            app.pipeline.SetIdleMessage(L"Paused",
+                                                        L"QBT Camera on the iPhone is in the background. Open it to continue.");
                             app.pipeline.Present(nullptr);
                         }
                         SetStatus(MakeStatus(paused ? HostStatus::Phase::Paused : HostStatus::Phase::Connected, route, usb));
@@ -353,11 +353,11 @@ void ShowMainWindow() {
 
 void ShowTrayMenu(HWND window) {
     HMENU menu = CreatePopupMenu();
-    AppendMenuW(menu, MF_STRING | MF_DEFAULT, kMenuOpen, L"Открыть QBT Camera");
+    AppendMenuW(menu, MF_STRING | MF_DEFAULT, kMenuOpen, L"Open QBT Camera");
     AppendMenuW(menu, MF_STRING | (shell::IsAutostartEnabled() ? MF_CHECKED : 0), kMenuAutostart,
-                L"Запускать вместе с Windows");
+                L"Start with Windows");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(menu, MF_STRING, kMenuExit, L"Выход");
+    AppendMenuW(menu, MF_STRING, kMenuExit, L"Exit");
     POINT cursor;
     GetCursorPos(&cursor);
     SetForegroundWindow(window); // so the menu closes when clicking elsewhere
@@ -454,10 +454,10 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         g_app->panel.SetStatus(status);
         std::wstring tip = L"QBT Camera — ";
         switch (status.phase) {
-        case HostStatus::Phase::Connected: tip += L"в эфире: " + status.route; break;
-        case HostStatus::Phase::Paused: tip += L"картинка на паузе"; break;
+        case HostStatus::Phase::Connected: tip += L"live: " + status.route; break;
+        case HostStatus::Phase::Paused: tip += L"paused"; break;
         case HostStatus::Phase::Error: tip += status.error; break;
-        default: tip += L"ждём iPhone"; break;
+        default: tip += L"waiting for iPhone"; break;
         }
         g_app->tray.SetTip(tip.c_str());
         return 0;
@@ -480,8 +480,8 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             ShowWindow(window, SW_HIDE);
             if (!g_app->trayHintShown) {
                 g_app->trayHintShown = true;
-                g_app->tray.ShowBalloon(L"QBT Camera работает в фоне",
-                                        L"Камера доступна в приложениях. Откройте окно или выйдите через значок в трее.");
+                g_app->tray.ShowBalloon(L"QBT Camera keeps running",
+                                        L"The camera stays available to your apps. Open the window or quit from the tray icon.");
             }
             return 0;
         }
@@ -579,7 +579,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int showCo
     DwmSetWindowAttribute(app.window, DWMWA_WINDOW_CORNER_PREFERENCE, &corners, sizeof(corners));
     SetWindowPos(app.window, nullptr, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER);
     if (FAILED(app.pipeline.Initialize(app.window))) {
-        MessageBoxW(nullptr, L"Не удалось инициализировать видеокарту (Direct3D 11).", L"QBT Camera", MB_ICONERROR);
+        MessageBoxW(nullptr, L"Couldn't initialize the graphics card (Direct3D 11).", L"QBT Camera", MB_ICONERROR);
         return 1;
     }
     app.panel.Create(

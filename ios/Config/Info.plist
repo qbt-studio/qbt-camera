@@ -3,15 +3,11 @@
 <plist version="1.0">
 <dict>
 	<key>NSCameraUsageDescription</key>
-	<string>QBT Camera передаёт видео с камеры на ваш компьютер.</string>
+	<string>QBT Camera sends video from the camera to your computer.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>QBT Camera передаёт звук с микрофона iPhone на ваш компьютер.</string>
+	<string>QBT Camera sends sound from the iPhone microphone to your computer.</string>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>Нужно, чтобы компьютер мог подключиться к iPhone по Wi-Fi.</string>
-	<key>UIBackgroundModes</key>
-	<array>
-		<string>audio</string>
-	</array>
+	<string>Lets your computer connect to the iPhone over Wi-Fi.</string>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_qbtcam._tcp</string>

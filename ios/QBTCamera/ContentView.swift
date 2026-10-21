@@ -7,10 +7,10 @@ enum ControlTab: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .exposure: "Экспозиция"
-        case .color: "Цвет"
-        case .background: "Фон"
-        case .stream: "Поток"
+        case .exposure: "Exposure"
+        case .color: "Color"
+        case .background: "Background"
+        case .stream: "Stream"
         }
     }
 
@@ -136,7 +136,7 @@ struct ContentView: View {
                                 .padding(.vertical, 1)
                                 .background(Palette.accent, in: Capsule())
                         }
-                        Text(engine.effectSettings.isActive ? "Эффекты включены" : "Rec.709 · без водяных знаков")
+                        Text(engine.effectSettings.isActive ? "Effects on" : "Rec.709 · no watermark")
                             .font(.system(size: 9))
                             .foregroundStyle(Palette.secondaryText)
                             .contentTransition(.opacity)
@@ -165,7 +165,7 @@ struct ContentView: View {
                 GlassIconButton(systemImage: torchOn ? "flashlight.on.fill" : torchBlocked ? "flashlight.slash" : "flashlight.off.fill",
                                 active: torchOn) {
                     if torchBlocked {
-                        engine.showNotice("Фонарик недоступен: iPhone нагрелся. Дайте ему остыть.")
+                        engine.showNotice("Torch unavailable: the iPhone is too warm. Let it cool down.")
                     } else {
                         engine.perform(["cmd": "torch", "value": torchOn ? 0.0 : 0.5])
                     }

@@ -104,20 +104,19 @@ final class StreamEngine: ObservableObject {
     private var stateTimer: Timer?
     private var started = false
     private var secondsWithoutDrops = 0
-    private let liveActivity = LiveActivityController()
     private var noticeTask: Task<Void, Never>?
 
     /// Where the portrait effect gets its depth from, for the Background panel.
     var depthLabel: String {
         guard effects.hasDepth else {
-            return lens.depthDevice == nil ? "по силуэту (у этой камеры нет датчика глубины)" : "по силуэту"
+            return lens.depthDevice == nil ? "silhouette only (this camera has no depth sensor)" : "silhouette only"
         }
-        return lens == .front ? "Глубина: TrueDepth" : "Глубина: LiDAR"
+        return lens == .front ? "Depth: TrueDepth" : "Depth: LiDAR"
     }
 
     /// "USB", "Wi-Fi" or a waiting hint, for the status island.
     var connectionLabel: String {
-        guard let clientName else { return "Ожидание ПК" }
+        guard let clientName else { return "Waiting for PC" }
         return clientName == "USB" ? "USB" : "Wi-Fi"
     }
 
@@ -133,7 +132,7 @@ final class StreamEngine: ObservableObject {
         orientation = defaults.string(forKey: Keys.orientation).flatMap(VideoOrientation.init(rawValue:)) ?? .auto
         audioEnabled = defaults.object(forKey: Keys.audio) as? Bool ?? true
         prompterText = defaults.string(forKey: Keys.prompterText)
-            ?? "Привет! Это суфлёр QBT Camera. Текст прокручивается у самого объектива — читайте его и смотрите прямо в камеру. Изменить текст: кнопка с карандашом."
+            ?? "Hi! This is the QBT Camera teleprompter. The text scrolls right next to the lens — read it while looking straight into the camera. Tap the pencil to edit it."
         let savedSpeed = defaults.double(forKey: Keys.prompterSpeed)
         prompterSpeed = savedSpeed > 0 ? savedSpeed : 2
         if let saved = defaults.dictionary(forKey: Keys.effects) {
@@ -251,13 +250,14 @@ final class StreamEngine: ObservableObject {
     func start() {
         guard !started else { return }
         started = true
+        LiveActivityCleanup.endLeftovers()
         wifiAddress = NetworkInfo.wifiAddress()
         audioMeter.start()
         AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
             Task { @MainActor in
                 guard let self else { return }
                 guard granted else {
-                    self.errorMessage = "Нет доступа к камере. Разрешите его: Настройки → QBT Camera → Камера."
+                    self.errorMessage = "No camera access. Allow it in Settings → QBT Camera → Camera."
                     return
                 }
                 self.applyCameraSettings()
@@ -265,7 +265,6 @@ final class StreamEngine: ObservableObject {
                 self.server.start()
             }
         }
-        liveActivity.start(with: activityState)
         statsTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.refreshStats() }
         }
@@ -282,15 +281,16 @@ final class StreamEngine: ObservableObject {
         server.start()
         camera.resume()
         refreshState()
-        liveActivity.update(activityState)
     }
 
-    /// The app went to the background: the camera stops, the microphone and the connection keep running.
+    /// The app went to the background: everything stops — camera, microphone, the connection to the PC.
+    /// No background modes, no Live Activity: a minimized QBT Camera is fully off.
     func pause() {
         guard started else { return }
         paused = true
-        refreshState()
-        liveActivity.update(activityState)
+        refreshState() // the PC hears "paused" before the link drops
+        server.stop()
+        camera.stop()
     }
 
     func showNotice(_ text: String) {
@@ -301,15 +301,6 @@ final class StreamEngine: ObservableObject {
             guard !Task.isCancelled else { return }
             self?.notice = nil
         }
-    }
-
-    private var activityState: StreamActivityAttributes.ContentState {
-        StreamActivityAttributes.ContentState(
-            connection: clientName == nil ? "" : connectionLabel,
-            quality: "\(preset.resolution.title) \(preset.fps)",
-            paused: paused,
-            microphone: audioEnabled && !microphoneDenied,
-            latencyMs: roundTripMillis.map { Int($0.rounded()) })
     }
 
     /// One command, from the PC (JSON) or from the phone's own controls — same format.
@@ -449,7 +440,6 @@ final class StreamEngine: ObservableObject {
         roundTripMillis = stats.roundTripMillis
         wifiAddress = NetworkInfo.wifiAddress()
         if clientName != nil && !paused { adaptBitrate(droppedFrames: stats.dropped) }
-        liveActivity.update(activityState)
     }
 
     /// Back off fast when the link drops frames, recover slowly when it keeps up.

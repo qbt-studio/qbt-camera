@@ -13,7 +13,7 @@ struct StatusIsland: View {
                     .font(.system(size: 11, weight: .bold))
                     .contentTransition(.opacity)
                 if connected, let roundTrip = engine.roundTripMillis {
-                    Text("\(Int(roundTrip)) мс")
+                    Text("\(Int(roundTrip)) ms")
                         .font(.system(size: 10, weight: .semibold, design: .monospaced))
                         .foregroundStyle(Palette.live)
                         .contentTransition(.numericText(value: roundTrip))
@@ -107,7 +107,7 @@ struct PrompterCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
-                Label("Смотрите сюда — в объектив", systemImage: "eye.fill")
+                Label("Look here — into the lens", systemImage: "eye.fill")
                     .font(.system(size: 10, weight: .bold))
                     .foregroundStyle(.cyan)
                     .lineLimit(1)
@@ -191,11 +191,11 @@ struct PrompterEditor: View {
                 .scrollContentBackground(.hidden)
                 .padding()
                 .background(Palette.background)
-                .navigationTitle("Текст суфлёра")
+                .navigationTitle("Teleprompter text")
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .confirmationAction) {
-                        Button("Готово") { dismiss() }
+                        Button("Done") { dismiss() }
                     }
                 }
         }
@@ -221,21 +221,21 @@ struct BlackoutView: View {
                 HStack(spacing: 6) {
                     let connected = engine.clientName != nil
                     LiveDot(color: connected ? Palette.live : Palette.warning, pulsing: connected)
-                    Text(connected ? "ТРАНСЛЯЦИЯ \(engine.preset.resolution.title) \(engine.preset.fps)" : "ОЖИДАНИЕ ПК")
+                    Text(connected ? "STREAMING \(engine.preset.resolution.title) \(engine.preset.fps)" : "WAITING FOR PC")
                         .font(.system(size: 12, weight: .heavy))
                         .tracking(1.2)
                         .foregroundStyle(connected ? Palette.live : Palette.warning)
                 }
-                Text("Экран выключен, чтобы iPhone не грелся. Камера продолжает работать.")
+                Text("The screen is off to keep the iPhone cool. The camera keeps running.")
                     .font(.system(size: 13, weight: .semibold))
                     .multilineTextAlignment(.center)
                     .foregroundStyle(.white.opacity(0.8))
                 HStack(spacing: 8) {
-                    stat("СВЯЗЬ", engine.connectionLabel, .white)
-                    stat("ЗАДЕРЖКА", engine.roundTripMillis.map { "\(Int($0)) мс" } ?? "—", Palette.live)
-                    stat("НАГРЕВ", engine.thermal.title, engine.thermal.color)
+                    stat("LINK", engine.connectionLabel, .white)
+                    stat("LATENCY", engine.roundTripMillis.map { "\(Int($0)) ms" } ?? "—", Palette.live)
+                    stat("HEAT", engine.thermal.title, engine.thermal.color)
                 }
-                Text("Коснитесь, чтобы включить экран")
+                Text("Tap to wake the screen")
                     .font(.system(size: 10, weight: .semibold))
                     .foregroundStyle(.white.opacity(0.35))
             }

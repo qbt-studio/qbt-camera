@@ -76,19 +76,19 @@ constexpr int kHoverOffset = 1000, kSwitchOffset = 2000, kSelectOffset = 3000;
 
 const char* const kLensNames[4] = {"ultrawide", "wide", "tele", "front"};
 const char* const kFilterNames[8] = {"none", "warm", "cool", "cinema", "vivid", "soft", "mono", "noir"};
-const wchar_t* const kFilterTitles[8] = {L"Нет", L"Тёплый", L"Холодный", L"Кино", L"Яркий", L"Мягкий", L"Ч/Б", L"Нуар"};
+const wchar_t* const kFilterTitles[8] = {L"None", L"Warm", L"Cool", L"Cinema", L"Vivid", L"Soft", L"Mono", L"Noir"};
 const char* const kResolutionNames[3] = {"hd720", "fullHD", "uhd4K"};
 const wchar_t* const kResolutionTitles[3] = {L"720p", L"1080p", L"4K"};
 constexpr int kFrameRates[2] = {30, 60};
 const char* const kOrientationNames[4] = {"auto", "landscape", "landscapeFlipped", "portrait"};
-const wchar_t* const kOrientationTitles[4] = {L"Авто", L"Горизонтально", L"Перевёрнуто", L"Вертикально"};
+const wchar_t* const kOrientationTitles[4] = {L"Auto", L"Landscape", L"Flipped", L"Portrait"};
 // Shutter speeds in microseconds: 1/8000 … 1/15 (1/50 and 1/100 avoid flicker under 50 Hz lights).
 constexpr double kShutterStops[] = {125, 250, 500, 1000, 2000, 4000, 5000, 8000, 10000, 16667, 20000, 33333, 40000, 66667};
 constexpr double kMinKelvin = 2500, kMaxKelvin = 8000;
 const char* const kBackgroundNames[4] = {"off", "portrait", "replace", "chroma"};
-const wchar_t* const kBackgroundTitles[4] = {L"Выкл", L"Портрет", L"Замена", L"Хромакей"};
+const wchar_t* const kBackgroundTitles[4] = {L"Off", L"Portrait", L"Replace", L"Chroma key"};
 const char* const kBackdropNames[6] = {"studio", "glow", "warm", "white", "black", "green"};
-const wchar_t* const kBackdropTitles[6] = {L"Студия", L"QBT", L"Тёплый", L"Белый", L"Чёрный", L"Зелёный"};
+const wchar_t* const kBackdropTitles[6] = {L"Studio", L"QBT", L"Warm", L"White", L"Black", L"Green"};
 
 // Rows inside the grouped settings, in DIPs.
 constexpr float kRowPad = 14, kSliderRow = 58, kSwitchRow = 46, kHintRow = 58, kChipHeight = 34, kGroupTitle = 26,
@@ -563,7 +563,7 @@ void StudioUi::DrawHeader(Rect area) {
     const float cy = (area.top + area.bottom) / 2 + 2;
     Logo(area.left, cy - 17, 34);
     Text(L"QBT Camera", {area.left + 46, cy - 20, area.left + 260, cy + 4}, titleFormat_.Get(), palette_.text);
-    Text(L"Studio  ·  iPhone как профессиональная веб-камера", {area.left + 46, cy + 3, area.left + 420, cy + 21},
+    Text(L"Studio  ·  your iPhone as a pro webcam", {area.left + 46, cy + 3, area.left + 420, cy + 21},
          smallFormat_.Get(), palette_.secondary);
 
     // Right side (left of the caption buttons): theme switch, then status pills.
@@ -602,22 +602,22 @@ void StudioUi::DrawHeader(Rect area) {
         right = rect.left - 10;
     };
 
-    if (!status_.cameraInstalled) pill(kIconWarning, L"Камера не установлена", kAmber, false);
-    else if (status_.cameraInUse) pill(0, L"Камера в работе", kRed, true);
-    else pill(kIconMonitor, L"Камера готова", palette_.secondary, false);
+    if (!status_.cameraInstalled) pill(kIconWarning, L"Camera not installed", kAmber, false);
+    else if (status_.cameraInUse) pill(0, L"Camera in use", kRed, true);
+    else pill(kIconMonitor, L"Camera ready", palette_.secondary, false);
 
     switch (status_.phase) {
     case HostStatus::Phase::Starting:
-        pill(0, L"Запуск…", palette_.tertiary, false);
+        pill(0, L"Starting…", palette_.tertiary, false);
         break;
     case HostStatus::Phase::Searching:
-        pill(0, L"Ищем iPhone", kAmber, true);
+        pill(0, L"Looking for iPhone", kAmber, true);
         break;
     case HostStatus::Phase::Connected:
-        pill(status_.usb ? kIconUsb : kIconWifi, std::wstring(L"В эфире · ") + (status_.usb ? L"USB" : L"Wi-Fi"), kGreen, false);
+        pill(status_.usb ? kIconUsb : kIconWifi, std::wstring(L"Live · ") + (status_.usb ? L"USB" : L"Wi-Fi"), kGreen, false);
         break;
     case HostStatus::Phase::Paused:
-        pill(0, L"Пауза: приложение свёрнуто", kAmber, true);
+        pill(0, L"Paused: app in background", kAmber, true);
         break;
     case HostStatus::Phase::Error:
         pill(0, status_.error, kRed, false);
@@ -636,7 +636,7 @@ void StudioUi::DrawControlStrip(Rect area) {
     // Row 1: lens switcher, mirror and torch, current quality.
     const float rowTop = area.top, rowBottom = area.top + 46;
     const bool anyLensKnown = std::any_of(std::begin(lensAvailable_), std::end(lensAvailable_), [](bool b) { return b; });
-    const std::wstring lensTitles[4] = {L"0.5×", L"1×", teleTitle_, L"Фронт"};
+    const std::wstring lensTitles[4] = {L"0.5×", L"1×", teleTitle_, L"Front"};
     float itemWidths[4] = {};
     float itemsWidth = 0;
     for (int i = 0; i < 4; ++i) {
@@ -704,7 +704,7 @@ void StudioUi::DrawControlStrip(Rect area) {
         Queue(Group::Torch, Format(R"({"cmd":"torch","value":%.2f})", torch_));
     }
     if (connected_ && hasTorch_ && !torchAvailable_ && !torchOn)
-        Text(L"Фонарик недоступен: iPhone нагрелся", {x, rowTop, area.right - 200, rowBottom}, smallFormat_.Get(), kAmber);
+        Text(L"Torch unavailable: iPhone too warm", {x, rowTop, area.right - 200, rowBottom}, smallFormat_.Get(), kAmber);
 
     // Quality on the right.
     if (status_.phase == HostStatus::Phase::Connected && status_.height > 0) {
@@ -733,17 +733,17 @@ void StudioUi::DrawControlStrip(Rect area) {
              DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
     };
     const bool live = status_.phase == HostStatus::Phase::Connected;
-    tile(0, kIconTimer, kGreen, L"Задержка", roundTripMillis_ >= 0 && live ? WideFormat(L"%.0f мс", roundTripMillis_) : L"—",
+    tile(0, kIconTimer, kGreen, L"Latency", roundTripMillis_ >= 0 && live ? WideFormat(L"%.0f ms", roundTripMillis_) : L"—",
          roundTripMillis_ < 80 ? palette_.text : kAmber);
-    tile(1, kIconPulse, kCyan, L"Поток", live ? WideFormat(L"%.1f Мбит/с", status_.megabits) : L"—", palette_.text);
-    tile(2, kIconVideo, kBlue, L"Кадры", live ? WideFormat(L"%.0f к/с", status_.fps) : L"—", palette_.text);
+    tile(1, kIconPulse, kCyan, L"Stream", live ? WideFormat(L"%.1f Mbps", status_.megabits) : L"—", palette_.text);
+    tile(2, kIconVideo, kBlue, L"Frames", live ? WideFormat(L"%.0f fps", status_.fps) : L"—", palette_.text);
     std::wstring heat = L"—";
     Color heatColor = palette_.text;
-    if (connected_ && thermal_ == "nominal") heat = L"Норма";
-    else if (connected_ && thermal_ == "fair") heat = L"Тёплый";
-    else if (connected_ && thermal_ == "serious") heat = L"Горячий", heatColor = kAmber;
-    else if (connected_ && thermal_ == "critical") heat = L"Перегрев", heatColor = kRed;
-    tile(3, kIconThermometer, kAmber, L"Нагрев iPhone", heat, heatColor);
+    if (connected_ && thermal_ == "nominal") heat = L"Normal";
+    else if (connected_ && thermal_ == "fair") heat = L"Warm";
+    else if (connected_ && thermal_ == "serious") heat = L"Hot", heatColor = kAmber;
+    else if (connected_ && thermal_ == "critical") heat = L"Overheating", heatColor = kRed;
+    tile(3, kIconThermometer, kAmber, L"iPhone heat", heat, heatColor);
 }
 
 void StudioUi::DrawSidebar(Rect area) {
@@ -753,7 +753,7 @@ void StudioUi::DrawSidebar(Rect area) {
     const Rect bar{area.left + 12, area.top + 12, area.right - 12, area.top + 12 + 58};
     Fill(bar, 18, palette_.control);
     const wchar_t icons[4] = {kIconCamera, kIconSparkle, kIconMicrophone, kIconBolt};
-    const wchar_t* titles[4] = {L"Камера", L"Эффекты", L"Звук", L"Поток"};
+    const wchar_t* titles[4] = {L"Camera", L"Effects", L"Audio", L"Stream"};
     const float tabWidth = (bar.right - bar.left - 8) / 4;
     const float indicatorX = Animate(kTabIndicatorX, bar.left + 4 + tab_ * tabWidth, 16);
     Selection({indicatorX, bar.top + 4, indicatorX + tabWidth, bar.bottom - 4}, 14, 1);
@@ -810,8 +810,8 @@ float StudioUi::CameraTab(float x, float y, float width) {
     bool changed = false, toggled = false;
 
     {
-        const Rect group = Platter(x, y, width, kSwitchRow + kSliderRow * 3, L"Экспозиция");
-        float row = SwitchRow(kExposureAuto, x, group.top, width, L"Автоматически", exposureAuto_, connected_ && manualExposure_, toggled);
+        const Rect group = Platter(x, y, width, kSwitchRow + kSliderRow * 3, L"Exposure");
+        float row = SwitchRow(kExposureAuto, x, group.top, width, L"Automatic", exposureAuto_, connected_ && manualExposure_, toggled);
         if (toggled) SendExposure();
         Separator(ix, row, iw + kRowPad);
         row = SliderRow(kIso, ix, row, iw, L"ISO", WideFormat(L"%.0f", IsoAt(iso_)), iso_, connected_ && manualExposure_, changed);
@@ -819,32 +819,32 @@ float StudioUi::CameraTab(float x, float y, float width) {
             exposureAuto_ = false;
             SendExposure();
         }
-        row = SliderRow(kShutter, ix, row, iw, L"Выдержка", WideFormat(L"1/%.0f", 1'000'000.0 / ShutterAt(shutter_)), shutter_,
+        row = SliderRow(kShutter, ix, row, iw, L"Shutter", WideFormat(L"1/%.0f", 1'000'000.0 / ShutterAt(shutter_)), shutter_,
                         connected_ && manualExposure_, changed);
         if (changed) {
             exposureAuto_ = false;
             SendExposure();
         }
         const double ev = std::round((minBias_ + (maxBias_ - minBias_) * bias_) * 10) / 10;
-        SliderRow(kBias, ix, row, iw, L"Яркость", WideFormat(L"%+.1f EV", ev), bias_, connected_ && exposureAuto_, changed);
+        SliderRow(kBias, ix, row, iw, L"Brightness", WideFormat(L"%+.1f EV", ev), bias_, connected_ && exposureAuto_, changed);
         if (changed) Queue(Group::Bias, Format(R"({"cmd":"exposureBias","value":%.1f})", ev));
         y = group.bottom + kGroupGap;
     }
     {
-        const Rect group = Platter(x, y, width, kSwitchRow + kSliderRow * 2, L"Баланс белого");
-        float row = SwitchRow(kWhiteBalanceAuto, x, group.top, width, L"Автоматически", whiteBalanceAuto_,
+        const Rect group = Platter(x, y, width, kSwitchRow + kSliderRow * 2, L"White balance");
+        float row = SwitchRow(kWhiteBalanceAuto, x, group.top, width, L"Automatic", whiteBalanceAuto_,
                               connected_ && manualWhiteBalance_, toggled);
         if (toggled) SendWhiteBalance();
         Separator(ix, row, iw + kRowPad);
         const Color cold = Rgb(0x60A5FA), warm = Rgb(0xFBBF24), green = Rgb(0x4ADE80), magenta = Rgb(0xE879F9);
         const double kelvin = std::round((kMinKelvin + (kMaxKelvin - kMinKelvin) * kelvin_) / 100) * 100;
-        row = SliderRow(kKelvin, ix, row, iw, L"Температура", WideFormat(L"%.0f K", kelvin), kelvin_,
+        row = SliderRow(kKelvin, ix, row, iw, L"Temperature", WideFormat(L"%.0f K", kelvin), kelvin_,
                         connected_ && manualWhiteBalance_, changed, &cold, &warm);
         if (changed) {
             whiteBalanceAuto_ = false;
             SendWhiteBalance();
         }
-        SliderRow(kTint, ix, row, iw, L"Оттенок", WideFormat(L"%+.0f", tint_ * 200 - 100), tint_, connected_ && manualWhiteBalance_,
+        SliderRow(kTint, ix, row, iw, L"Tint", WideFormat(L"%+.0f", tint_ * 200 - 100), tint_, connected_ && manualWhiteBalance_,
                   changed, &green, &magenta);
         if (changed) {
             whiteBalanceAuto_ = false;
@@ -853,11 +853,11 @@ float StudioUi::CameraTab(float x, float y, float width) {
         y = group.bottom + kGroupGap;
     }
     {
-        const Rect group = Platter(x, y, width, kSwitchRow + kSliderRow, L"Фокус");
-        float row = SwitchRow(kFocusAuto, x, group.top, width, L"Автофокус", focusAuto_, connected_ && manualFocus_, toggled);
+        const Rect group = Platter(x, y, width, kSwitchRow + kSliderRow, L"Focus");
+        float row = SwitchRow(kFocusAuto, x, group.top, width, L"Autofocus", focusAuto_, connected_ && manualFocus_, toggled);
         if (toggled) SendFocus();
         Separator(ix, row, iw + kRowPad);
-        SliderRow(kFocus, ix, row, iw, L"Дистанция", WideFormat(L"%.0f %%", focus_ * 100), focus_, connected_ && manualFocus_, changed);
+        SliderRow(kFocus, ix, row, iw, L"Distance", WideFormat(L"%.0f %%", focus_ * 100), focus_, connected_ && manualFocus_, changed);
         if (changed) {
             focusAuto_ = false;
             SendFocus();
@@ -866,14 +866,14 @@ float StudioUi::CameraTab(float x, float y, float width) {
     }
     {
         const bool torchBlocked = connected_ && hasTorch_ && !torchAvailable_ && torch_ < 0.01;
-        const Rect group = Platter(x, y, width, kSliderRow * 2 + (torchBlocked ? 24 : 0), L"Зум и фонарик");
-        float row = SliderRow(kZoom, ix, group.top, iw, L"Увеличение", WideFormat(L"%.1f×", ZoomAt(zoom_)), zoom_, connected_, changed);
+        const Rect group = Platter(x, y, width, kSliderRow * 2 + (torchBlocked ? 24 : 0), L"Zoom & torch");
+        float row = SliderRow(kZoom, ix, group.top, iw, L"Zoom", WideFormat(L"%.1f×", ZoomAt(zoom_)), zoom_, connected_, changed);
         if (changed) Queue(Group::Zoom, Format(R"({"cmd":"zoom","value":%.3f})", ZoomAt(zoom_)));
-        row = SliderRow(kTorch, ix, row, iw, L"Фонарик", torch_ < 0.01 ? std::wstring(L"выкл") : WideFormat(L"%.0f %%", torch_ * 100),
+        row = SliderRow(kTorch, ix, row, iw, L"Torch", torch_ < 0.01 ? std::wstring(L"off") : WideFormat(L"%.0f %%", torch_ * 100),
                         torch_, connected_ && hasTorch_ && !torchBlocked, changed);
         if (changed) Queue(Group::Torch, Format(R"({"cmd":"torch","value":%.2f})", torch_));
         if (torchBlocked)
-            Text(L"iPhone нагрелся — iOS временно не даёт включить фонарик", {ix, row - 6, ix + iw, row + 16}, smallFormat_.Get(),
+            Text(L"The iPhone is too warm — iOS won't turn the torch on for now", {ix, row - 6, ix + iw, row + 16}, smallFormat_.Get(),
                  kAmber);
         y = group.bottom;
     }
@@ -894,7 +894,7 @@ float StudioUi::EffectsTab(float x, float y, float width) {
         if (portrait) height += kSliderRow + 26;
         if (replace) height += backdrops + 26;
         if (chroma) height += backdrops + kSliderRow * 3 + kChipHeight + 14;
-        const Rect group = Platter(x, y, width, height, L"Фон");
+        const Rect group = Platter(x, y, width, height, L"Background");
         float row = group.top + 14;
         const float quarterWidth = (iw - 8 * 3) / 4;
         for (int i = 0; i < 4; ++i) {
@@ -910,7 +910,7 @@ float StudioUi::EffectsTab(float x, float y, float width) {
             // Where the work happens: the PC's GPU (cool phone, full-resolution edges) or the iPhone.
             Separator(ix, row, iw + kRowPad);
             row += 14;
-            const wchar_t* titles[2] = {L"Считает компьютер", L"Считает iPhone"};
+            const wchar_t* titles[2] = {L"Computed on PC", L"Computed on iPhone"};
             const char* names[2] = {"pc", "phone"};
             const float halfWidth = (iw - 8) / 2;
             for (int i = 0; i < 2; ++i) {
@@ -925,15 +925,15 @@ float StudioUi::EffectsTab(float x, float y, float width) {
         }
         if (portrait || replace) {
             // Where the depth comes from: real sensors make the blur follow the distance like a lens.
-            std::wstring source = L"Глубина: по силуэту (нейросеть)";
-            if (depthActive_ && depthSensor_ == "lidar") source = L"Глубина: LiDAR + нейросеть";
-            else if (depthActive_ && depthSensor_ == "truedepth") source = L"Глубина: TrueDepth + нейросеть";
+            std::wstring source = L"Depth: silhouette (neural network)";
+            if (depthActive_ && depthSensor_ == "lidar") source = L"Depth: LiDAR + neural network";
+            else if (depthActive_ && depthSensor_ == "truedepth") source = L"Depth: TrueDepth + neural network";
             Separator(ix, row, iw + kRowPad);
             Text(source, {ix, row, ix + iw, row + 26}, smallFormat_.Get(), depthActive_ ? kGreen : palette_.tertiary);
             row += 26;
         }
         if (portrait) {
-            SliderRow(kBlur, ix, row, iw, L"Размытие", WideFormat(L"%.0f %%", blur_ * 100), blur_, connected_, changed);
+            SliderRow(kBlur, ix, row, iw, L"Blur", WideFormat(L"%.0f %%", blur_ * 100), blur_, connected_, changed);
             if (changed) SendEffects();
         }
         if (replace || chroma) {
@@ -953,34 +953,34 @@ float StudioUi::EffectsTab(float x, float y, float width) {
         }
         if (chroma) {
             Separator(ix, row, iw + kRowPad);
-            row = SliderRow(kKeySensitivity, ix, row, iw, L"Чувствительность", WideFormat(L"%.0f %%", keySensitivity_ * 100),
+            row = SliderRow(kKeySensitivity, ix, row, iw, L"Sensitivity", WideFormat(L"%.0f %%", keySensitivity_ * 100),
                             keySensitivity_, connected_, changed);
             if (changed) SendEffects();
-            row = SliderRow(kKeySoftness, ix, row, iw, L"Мягкость края", WideFormat(L"%.0f %%", keySoftness_ * 100), keySoftness_,
+            row = SliderRow(kKeySoftness, ix, row, iw, L"Edge softness", WideFormat(L"%.0f %%", keySoftness_ * 100), keySoftness_,
                             connected_, changed);
             if (changed) SendEffects();
-            row = SliderRow(kKeySpill, ix, row, iw, L"Убрать зелёный отсвет", WideFormat(L"%.0f %%", keySpill_ * 100), keySpill_,
+            row = SliderRow(kKeySpill, ix, row, iw, L"Remove green spill", WideFormat(L"%.0f %%", keySpill_ * 100), keySpill_,
                             connected_, changed);
             if (changed) SendEffects();
-            if (Chip(kKeyResample, {ix, row + 4, ix + iw, row + 4 + kChipHeight}, L"Определить цвет фона заново", false, connected_))
+            if (Chip(kKeyResample, {ix, row + 4, ix + iw, row + 4 + kChipHeight}, L"Detect screen color again", false, connected_))
                 Queue(Group::Effects, R"({"cmd":"effects","keyResample":true})");
         }
         y = group.bottom + kGroupGap;
     }
     {
-        const Rect group = Platter(x, y, width, kSliderRow + kSwitchRow, L"Лицо");
-        float row = SliderRow(kRetouch, ix, group.top, iw, L"Ретушь кожи",
-                              retouch_ < 0.01 ? std::wstring(L"выкл") : WideFormat(L"%.0f %%", retouch_ * 100), retouch_, connected_,
+        const Rect group = Platter(x, y, width, kSliderRow + kSwitchRow, L"Face");
+        float row = SliderRow(kRetouch, ix, group.top, iw, L"Skin smoothing",
+                              retouch_ < 0.01 ? std::wstring(L"off") : WideFormat(L"%.0f %%", retouch_ * 100), retouch_, connected_,
                               changed);
         if (changed) SendEffects();
         Separator(ix, row, iw + kRowPad);
-        SwitchRow(kFraming, x, row, width, L"Следить за лицом", framing_, connected_, toggled);
+        SwitchRow(kFraming, x, row, width, L"Follow face", framing_, connected_, toggled);
         if (toggled) SendEffects();
         y = group.bottom + kGroupGap;
     }
     {
         const float chips = kChipHeight * 2 + 8;
-        const Rect group = Platter(x, y, width, 14 + chips + 6 + kSliderRow, L"Цветовой фильтр");
+        const Rect group = Platter(x, y, width, 14 + chips + 6 + kSliderRow, L"Color filter");
         float row = group.top + 14;
         const float chipWidth = (iw - 8 * 3) / 4;
         for (int i = 0; i < 8; ++i) {
@@ -993,24 +993,24 @@ float StudioUi::EffectsTab(float x, float y, float width) {
             }
         }
         row += chips + 6;
-        SliderRow(kFilterAmount, ix, row, iw, L"Сила", WideFormat(L"%.0f %%", filterAmount_ * 100), filterAmount_,
+        SliderRow(kFilterAmount, ix, row, iw, L"Strength", WideFormat(L"%.0f %%", filterAmount_ * 100), filterAmount_,
                   connected_ && filter_ != "none", changed);
         if (changed) SendEffects();
         y = group.bottom + kGroupGap;
     }
     {
-        const Rect group = Platter(x, y, width, kSwitchRow, L"Кадр");
-        SwitchRow(kMirrorSwitch, x, group.top, width, L"Отразить по горизонтали", mirror_, connected_, toggled);
+        const Rect group = Platter(x, y, width, kSwitchRow, L"Frame");
+        SwitchRow(kMirrorSwitch, x, group.top, width, L"Mirror horizontally", mirror_, connected_, toggled);
         if (toggled) SendEffects();
         y = group.bottom + 12;
     }
 
     std::wstring info;
-    if (!connected_) info = L"Подключите iPhone, чтобы настроить эффекты.";
+    if (!connected_) info = L"Connect your iPhone to set up effects.";
     else if (effectsMillis_ > 0.05)
-        info = WideFormat(L"Эффекты считает iPhone: %.1f мс на кадр (нейросеть %.1f мс, остальное — видеокарта).", effectsMillis_,
+        info = WideFormat(L"iPhone effects: %.1f ms per frame (neural network %.1f ms, the rest on the GPU).", effectsMillis_,
                           visionMillis_);
-    else info = L"Эффекты выключены: видео идёт без обработки.";
+    else info = L"Effects off: video passes through untouched.";
     return InfoText(x + 6, y, width - 12, info, palette_.tertiary);
 }
 
@@ -1019,8 +1019,8 @@ float StudioUi::AudioTab(float x, float y, float width) {
     bool toggled = false;
 
     {
-        const Rect group = Platter(x, y, width, kSwitchRow + 40, L"Микрофон iPhone");
-        float row = SwitchRow(kMicrophone, x, group.top, width, L"Передавать звук", microphoneOn_, connected_ && microphoneAvailable_,
+        const Rect group = Platter(x, y, width, kSwitchRow + 40, L"iPhone microphone");
+        float row = SwitchRow(kMicrophone, x, group.top, width, L"Send audio", microphoneOn_, connected_ && microphoneAvailable_,
                               toggled);
         if (toggled) Queue(Group::Audio, Format(R"({"cmd":"audio","enabled":%s})", microphoneOn_ ? "true" : "false"));
         Separator(ix, row, iw + kRowPad);
@@ -1041,11 +1041,11 @@ float StudioUi::AudioTab(float x, float y, float width) {
     }
     {
         const float rows = static_cast<float>(devices_.size() + 1);
-        const Rect group = Platter(x, y, width, rows * 44, L"Где играть звук на ПК");
+        const Rect group = Platter(x, y, width, rows * 44, L"Play audio on this PC");
         float row = group.top;
         for (size_t i = 0; i <= devices_.size(); ++i) {
             const std::wstring id = i == 0 ? std::wstring() : devices_[i - 1].first;
-            const std::wstring name = i == 0 ? std::wstring(L"Не выводить") : devices_[i - 1].second;
+            const std::wstring name = i == 0 ? std::wstring(L"Don't play") : devices_[i - 1].second;
             const bool selected = id == selectedDevice_;
             const int widgetId = kDeviceBase + static_cast<int>(i);
             const Rect item{x + 4, row + 3, x + width - 4, row + 41};
@@ -1074,15 +1074,15 @@ float StudioUi::AudioTab(float x, float y, float width) {
     std::wstring info;
     Color color = palette_.tertiary;
     if (microphoneDenied_) {
-        info = L"iPhone не дал доступ к микрофону: Настройки → QBT Camera → Микрофон.";
+        info = L"The iPhone denied microphone access: Settings → QBT Camera → Microphone.";
         color = kAmber;
     } else if (selected != devices_.end() && isCable(selected->second)) {
-        info = L"В Zoom, Discord или Teams выберите микрофон «CABLE Output».";
+        info = L"In Zoom, Discord or Teams pick the “CABLE Output” microphone.";
     } else if (selected == devices_.end()) {
-        info = L"Звук iPhone принимается, но никуда не выводится. Свой микрофон «QBT Camera» для звонков появится "
-               L"в одной из следующих версий.";
+        info = L"iPhone audio is received but not played anywhere. A built-in “QBT Camera” microphone for calls is coming "
+               L"in a future version.";
     } else {
-        info = L"Звук играет в «" + selected->second + L"» — это прослушка, не микрофон для звонков.";
+        info = L"Audio plays on “" + selected->second + L"” — for monitoring only, not a microphone for calls.";
     }
     return InfoText(x + 6, y, width - 12, info, color);
 }
@@ -1092,7 +1092,7 @@ float StudioUi::StreamTab(float x, float y, float width) {
     bool changed = false, toggled = false;
 
     {
-        const Rect group = Platter(x, y, width, 14 + kChipHeight * 2 + 8 + 14, L"Качество");
+        const Rect group = Platter(x, y, width, 14 + kChipHeight * 2 + 8 + 14, L"Quality");
         float row = group.top + 14;
         const float third = (iw - 16) / 3;
         for (int i = 0; i < 3; ++i) {
@@ -1107,7 +1107,7 @@ float StudioUi::StreamTab(float x, float y, float width) {
         const float half = (iw - 8) / 2;
         for (int i = 0; i < 2; ++i) {
             const float cx = ix + i * (half + 8);
-            if (Chip(kFpsBase + i, {cx, row, cx + half, row + kChipHeight}, WideFormat(L"%d к/с", kFrameRates[i]),
+            if (Chip(kFpsBase + i, {cx, row, cx + half, row + kChipHeight}, WideFormat(L"%d fps", kFrameRates[i]),
                      fps_ == kFrameRates[i], connected_)) {
                 fps_ = kFrameRates[i];
                 SendPreset();
@@ -1116,7 +1116,7 @@ float StudioUi::StreamTab(float x, float y, float width) {
         y = group.bottom + kGroupGap;
     }
     {
-        const Rect group = Platter(x, y, width, 14 + kChipHeight * 2 + 8 + 14, L"Ориентация");
+        const Rect group = Platter(x, y, width, 14 + kChipHeight * 2 + 8 + 14, L"Orientation");
         const float row = group.top + 14;
         const float half = (iw - 8) / 2;
         for (int i = 0; i < 4; ++i) {
@@ -1131,21 +1131,21 @@ float StudioUi::StreamTab(float x, float y, float width) {
         y = group.bottom + kGroupGap;
     }
     {
-        const Rect group = Platter(x, y, width, kHintRow, L"Экран iPhone");
-        SwitchRow(kBlackout, x, group.top, width, L"Чёрный экран", blackout_, connected_, toggled,
-                  L"Экономит батарею и снижает нагрев");
+        const Rect group = Platter(x, y, width, kHintRow, L"iPhone screen");
+        SwitchRow(kBlackout, x, group.top, width, L"Black screen", blackout_, connected_, toggled,
+                  L"Saves battery and keeps the iPhone cool");
         if (toggled) Queue(Group::Screen, Format(R"({"cmd":"screen","blackout":%s})", blackout_ ? "true" : "false"));
         y = group.bottom + kGroupGap;
     }
     {
-        const Rect group = Platter(x, y, width, kSwitchRow * 2 + kSliderRow, L"Суфлёр у объектива");
-        float row = SwitchRow(kPrompterVisible, x, group.top, width, L"Показать на iPhone", prompterVisible_, connected_, toggled);
+        const Rect group = Platter(x, y, width, kSwitchRow * 2 + kSliderRow, L"Teleprompter by the lens");
+        float row = SwitchRow(kPrompterVisible, x, group.top, width, L"Show on iPhone", prompterVisible_, connected_, toggled);
         if (toggled) SendPrompter();
         Separator(ix, row, iw + kRowPad);
-        row = SwitchRow(kPrompterPlaying, x, row, width, L"Прокрутка", prompterPlaying_, connected_, toggled);
+        row = SwitchRow(kPrompterPlaying, x, row, width, L"Scrolling", prompterPlaying_, connected_, toggled);
         if (toggled) SendPrompter();
         Separator(ix, row, iw + kRowPad);
-        SliderRow(kPrompterSpeed, ix, row, iw, L"Скорость", WideFormat(L"%.0f из 5", 1 + prompterSpeed_ * 4), prompterSpeed_,
+        SliderRow(kPrompterSpeed, ix, row, iw, L"Speed", WideFormat(L"%.0f of 5", 1 + prompterSpeed_ * 4), prompterSpeed_,
                   connected_, changed);
         if (changed) {
             prompterSpeed_ = std::round(prompterSpeed_ * 4) / 4;
@@ -1154,13 +1154,13 @@ float StudioUi::StreamTab(float x, float y, float width) {
         y = group.bottom + kGroupGap;
     }
     {
-        const std::wstring camera = !status_.cameraInstalled ? L"Камера «QBT Camera» не установлена: запустите install_camera.ps1."
-                                    : status_.cameraInUse    ? L"Камера «QBT Camera» сейчас используется приложением."
-                                                             : L"Камера «QBT Camera» видна во всех приложениях: Zoom, Teams, OBS, браузеры.";
+        const std::wstring camera = !status_.cameraInstalled ? L"The “QBT Camera” camera isn't installed: run install_camera.ps1."
+                                    : status_.cameraInUse    ? L"The “QBT Camera” camera is in use by an app."
+                                                             : L"“QBT Camera” shows up in all your apps: Zoom, Teams, OBS, browsers.";
         const float info = TextHeight(camera, iw);
-        const Rect group = Platter(x, y, width, kSwitchRow + info + 14, L"Компьютер");
+        const Rect group = Platter(x, y, width, kSwitchRow + info + 14, L"Computer");
         bool autostart = shell::IsAutostartEnabled();
-        const float row = SwitchRow(kAutostart, x, group.top, width, L"Запускать вместе с Windows", autostart, true, toggled);
+        const float row = SwitchRow(kAutostart, x, group.top, width, L"Start with Windows", autostart, true, toggled);
         if (toggled) shell::SetAutostart(autostart);
         Separator(ix, row, iw + kRowPad);
         InfoText(ix, row + 7, iw, camera, palette_.tertiary);
@@ -1528,7 +1528,6 @@ void StudioUi::OnState(const JsonObject& state) {
         if (state.Has("background")) background_ = state.String("background");
         else background_ = blur_ > 0.01 ? "portrait" : "off"; // older iPhone app
         if (state.Has("backdrop")) backdropName_ = state.String("backdrop");
-        if (state.Has("processing")) processing_ = state.String("processing");
         keySensitivity_ = state.Number("keySensitivity", 0.5);
         keySoftness_ = state.Number("keySoftness", 0.4);
         keySpill_ = state.Number("keySpill", 0.7);

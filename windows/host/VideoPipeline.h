@@ -10,6 +10,7 @@
 #include <mutex>
 #include <string>
 
+#include "BackgroundCompositor.h"
 #include "Common.h"
 
 // Owns the D3D11 device (shared with the decoder), the preview swap chain and the GPU video
@@ -39,6 +40,10 @@ public:
     HRESULT Present(const DecodedFrame* frame);
     /// UI thread, after a resize: redraws the idle screen at the new size (frames do this themselves).
     void RefreshIdle();
+
+    /// Background effect on the GPU (portrait / replace / chroma key) from the picture and the phone's
+    /// matte stream. On success `out` is the composited RGB frame, ready for Present / RenderNV12.
+    HRESULT Composite(const DecodedFrame& frame, const DecodedFrame* aux, const BackgroundSettings& settings, DecodedFrame& out);
 
     /// Renders the frame letterboxed into a width x height NV12 image and hands its bytes
     /// (Y rows then interleaved UV rows, `rowPitch` apart) to `consume`.
@@ -86,6 +91,11 @@ private:
 
     Processor previewProcessor_;
     Processor cameraProcessor_;
+    Processor compositeProcessor_;
+    Processor auxProcessor_;
+    BackgroundCompositor compositor_;
+    bool compositorReady_ = false;
+    bool compositorFailed_ = false;
     ComPtr<ID3D11Texture2D> cameraTarget_;
     ComPtr<ID3D11Texture2D> cameraStaging_;
     UINT cameraWidth_ = 0;

@@ -36,6 +36,16 @@ enum CameraLens: String, CaseIterable, Identifiable {
         }
     }
 
+    /// The same camera with a depth sensor next to it: LiDAR behind the main camera,
+    /// TrueDepth at the front. Other lenses have no depth.
+    var depthDevice: AVCaptureDevice? {
+        switch self {
+        case .wide: AVCaptureDevice.default(.builtInLiDARDepthCamera, for: .video, position: .back)
+        case .front: AVCaptureDevice.default(.builtInTrueDepthCamera, for: .video, position: .front)
+        default: nil
+        }
+    }
+
     /// Lenses this iPhone actually has.
     static let available: [CameraLens] = allCases.filter { $0.device != nil }
 }

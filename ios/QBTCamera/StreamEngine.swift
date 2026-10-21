@@ -97,6 +97,8 @@ final class StreamEngine: ObservableObject {
     private let effects = VideoEffects()
     private let resampler = AudioResampler()
     private let encoder = VideoEncoder()
+    /// Matte side stream for PC-side background processing.
+    private let auxEncoder = VideoEncoder()
     private let server = StreamServer(port: QBTProtocol.videoPort)
     private var statsTimer: Timer?
     private var stateTimer: Timer?
@@ -104,6 +106,14 @@ final class StreamEngine: ObservableObject {
     private var secondsWithoutDrops = 0
     private let liveActivity = LiveActivityController()
     private var noticeTask: Task<Void, Never>?
+
+    /// Where the portrait effect gets its depth from, for the Background panel.
+    var depthLabel: String {
+        guard effects.hasDepth else {
+            return lens.depthDevice == nil ? "по силуэту (у этой камеры нет датчика глубины)" : "по силуэту"
+        }
+        return lens == .front ? "Глубина: TrueDepth" : "Глубина: LiDAR"
+    }
 
     /// "USB", "Wi-Fi" or a waiting hint, for the status island.
     var connectionLabel: String {
@@ -131,7 +141,8 @@ final class StreamEngine: ObservableObject {
             effects.update(effectSettings)
         }
 
-        Self.connectPipeline(camera: camera, effects: effects, preview: preview, encoder: encoder, server: server)
+        Self.connectPipeline(camera: camera, effects: effects, preview: preview, encoder: encoder, auxEncoder: auxEncoder,
+                             server: server)
         Self.connectAudio(camera: camera, resampler: resampler, meter: audioMeter, server: server)
         server.onClientChanged = { [weak self] name in
             Task { @MainActor in
@@ -149,20 +160,33 @@ final class StreamEngine: ObservableObject {
 
     /// Nonisolated so these per-frame closures are not tied to the main actor.
     private nonisolated static func connectPipeline(camera: CameraCapture, effects: VideoEffects, preview: PreviewSink,
-                                                   encoder: VideoEncoder, server: StreamServer) {
+                                                   encoder: VideoEncoder, auxEncoder: VideoEncoder, server: StreamServer) {
+        effects.onAuxFrame = { buffer, pts in
+            if server.hasClient { auxEncoder.encode(buffer, pts: pts) }
+        }
+        auxEncoder.onEncodedFrame = { data, keyframe, ptsMicros in
+            server.sendAux(frame: data, keyframe: keyframe, ptsMicros: ptsMicros)
+        }
         camera.onFrame = { pixelBuffer, pts in
             let streaming = server.hasClient
             let previewing = preview.isEnabled
             guard streaming || previewing else { return } // screen off and nobody watching: do nothing
-            let output = effects.process(pixelBuffer)
-            if previewing { preview.show(output, pts: pts) }
-            if streaming { encoder.encode(output, pts: pts) }
+            // Every frame reaches the preview and the encoder through the effects' delivery queue,
+            // in order (the preview must only be touched from one queue).
+            effects.process(pixelBuffer, pts: pts) { output, pts in
+                if previewing { preview.show(output, pts: pts) }
+                if streaming { encoder.encode(output, pts: pts) }
+            }
         }
         encoder.onEncodedFrame = { data, keyframe, ptsMicros in
             server.send(frame: data, keyframe: keyframe, ptsMicros: ptsMicros)
         }
-        server.onKeyframeNeeded = { encoder.requestKeyframe() }
+        server.onKeyframeNeeded = {
+            encoder.requestKeyframe()
+            auxEncoder.requestKeyframe()
+        }
         // New lens or format: tell the PC what the camera can do now.
+        camera.onDepth = { depth in effects.updateDepth(depth) }
         camera.onConfigured = { device, lens in
             if let json = CameraControl.encode(capabilities(of: device, lens: lens)) {
                 server.sendMessage(json)
@@ -186,6 +210,9 @@ final class StreamEngine: ObservableObject {
         caps["filters"] = ColorFilter.allCases.map(\.rawValue).joined(separator: ",")
         caps["microphone"] = AVCaptureDevice.default(for: .audio) != nil
         caps["teleTitle"] = CameraLens.telephoto.title
+        // Which depth sensor feeds the portrait effect right now.
+        caps["depth"] = device.deviceType == .builtInLiDARDepthCamera ? "lidar"
+            : device.deviceType == .builtInTrueDepthCamera ? "truedepth" : ""
         // Lets the PC fall back to Wi-Fi instantly when the cable is pulled, without scanning the network.
         caps["wifi"] = NetworkInfo.wifiAddress() ?? ""
         return caps
@@ -194,6 +221,17 @@ final class StreamEngine: ObservableObject {
     private nonisolated static func effectSettings(from values: [String: Any], base: EffectSettings) -> EffectSettings {
         var settings = base
         if let blur = values["blur"] as? NSNumber { settings.blur = blur.doubleValue.clamped(0, 1) }
+        if let mode = (values["background"] as? String).flatMap(BackgroundMode.init(rawValue:)) {
+            settings.background = mode
+        } else if let blur = values["blur"] as? NSNumber { // older PC apps only know a blur slider
+            if blur.doubleValue > 0.01, settings.background == .off { settings.background = .portrait }
+            if blur.doubleValue <= 0.01, settings.background == .portrait { settings.background = .off }
+        }
+        if let backdrop = (values["backdrop"] as? String).flatMap(Backdrop.init(rawValue:)) { settings.backdrop = backdrop }
+        if let value = values["keySensitivity"] as? NSNumber { settings.keySensitivity = value.doubleValue.clamped(0, 1) }
+        if let value = values["keySoftness"] as? NSNumber { settings.keySoftness = value.doubleValue.clamped(0, 1) }
+        if let value = values["keySpill"] as? NSNumber { settings.keySpill = value.doubleValue.clamped(0, 1) }
+        if let processing = values["processing"] as? String { settings.processOnPC = processing != "phone" }
         if let retouch = values["retouch"] as? NSNumber { settings.retouch = retouch.doubleValue.clamped(0, 1) }
         if let framing = values["framing"] as? Bool { settings.framing = framing }
         if let filter = (values["filter"] as? String).flatMap(ColorFilter.init(rawValue:)) { settings.filter = filter }
@@ -203,7 +241,10 @@ final class StreamEngine: ObservableObject {
     }
 
     private nonisolated static func dictionary(of settings: EffectSettings) -> [String: Any] {
-        ["blur": settings.blur, "retouch": settings.retouch, "framing": settings.framing,
+        ["background": settings.background.rawValue, "blur": settings.blur, "backdrop": settings.backdrop.rawValue,
+         "keySensitivity": settings.keySensitivity, "keySoftness": settings.keySoftness, "keySpill": settings.keySpill,
+         "processing": settings.processOnPC ? "pc" : "phone",
+         "retouch": settings.retouch, "framing": settings.framing,
          "filter": settings.filter.rawValue, "filterAmount": settings.filterAmount, "mirror": settings.mirror]
     }
 
@@ -296,6 +337,7 @@ final class StreamEngine: ObservableObject {
             preset = updated
         case "effects":
             updateEffects(Self.effectSettings(from: command, base: effectSettings))
+            if command["keyResample"] as? Bool == true { effects.resampleKeyColor() }
         case "prompter":
             if let text = command["text"] as? String { prompterText = text }
             if let visible = command["visible"] as? Bool { prompterVisible = visible }
@@ -308,9 +350,17 @@ final class StreamEngine: ObservableObject {
     }
 
     func updateEffects(_ settings: EffectSettings) {
+        let depthChanged = settings.wantsDepth != effectSettings.wantsDepth
+        if settings.background == .chroma, effectSettings.background != .chroma { effects.resampleKeyColor() }
         effectSettings = settings
         effects.update(settings)
         defaults.set(Self.dictionary(of: settings), forKey: Keys.effects)
+        if depthChanged { applyCameraSettings() } // switch to / from the LiDAR or TrueDepth camera
+    }
+
+    /// Chroma key: look at the screen color again (after the light changed, or a new backdrop).
+    func resampleKeyColor() {
+        effects.resampleKeyColor()
     }
 
     private func applyCameraSettings() {
@@ -319,8 +369,9 @@ final class StreamEngine: ObservableObject {
         targetBitrate = preset.bitrate
         secondsWithoutDrops = 0
         encoder.configure(fps: preset.fps, bitrate: preset.bitrate)
+        auxEncoder.configure(fps: preset.fps, bitrate: 1_500_000)
         server.setFrameRate(preset.fps)
-        camera.start(lens: lens, preset: preset, orientation: orientation)
+        camera.start(lens: lens, preset: preset, orientation: orientation, depth: effectSettings.wantsDepth)
     }
 
     private func applyAudio() {
@@ -367,6 +418,7 @@ final class StreamEngine: ObservableObject {
             "prompterSpeed": prompterSpeed,
             "blackout": blackout,
             "paused": paused,
+            "depthActive": effects.hasDepth,
             "resolution": preset.resolution.rawValue,
             "fps": preset.fps,
             "orientation": orientation.rawValue,
@@ -382,6 +434,7 @@ final class StreamEngine: ObservableObject {
             guard connected else { return }
             state.merge(extras) { _, extra in extra }
             state["effectsMs"] = effects.current.isActive ? effects.lastProcessingMillis : 0
+            state["visionMs"] = effects.current.isActive ? effects.lastVisionMillis : 0
             if let json = CameraControl.encode(state) {
                 server.sendMessage(json)
             }

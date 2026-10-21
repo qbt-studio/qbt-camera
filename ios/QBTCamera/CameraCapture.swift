@@ -15,7 +15,8 @@ enum CaptureError: LocalizedError {
 
 /// Owns the AVCaptureSession and hands raw NV12 frames to `onFrame` with no extra copies,
 /// and (when enabled) microphone audio to `onAudio`.
-final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptureAudioDataOutputSampleBufferDelegate {
+final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptureAudioDataOutputSampleBufferDelegate,
+    AVCaptureDepthDataOutputDelegate {
     let session = AVCaptureSession()
 
     /// Called on the video queue for every captured frame.
@@ -25,11 +26,15 @@ final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     var onConfigured: ((AVCaptureDevice, CameraLens) -> Void)?
     /// Microphone sample buffers (~20 ms each), called on the audio queue.
     var onAudio: ((CMSampleBuffer) -> Void)?
+    /// Depth maps (LiDAR / TrueDepth) while depth is on, nil when it turns off. Called on the depth queue.
+    var onDepth: ((AVDepthData?) -> Void)?
 
     private let sessionQueue = DispatchQueue(label: "qbt.camera.session")
     private let videoQueue = DispatchQueue(label: "qbt.camera.video", qos: .userInteractive)
     private let output = AVCaptureVideoDataOutput()
     private var input: AVCaptureDeviceInput?
+    private let depthOutput = AVCaptureDepthDataOutput()
+    private let depthQueue = DispatchQueue(label: "qbt.camera.depth", qos: .userInteractive)
     private let audioQueue = DispatchQueue(label: "qbt.camera.audio", qos: .userInteractive)
     // The microphone has its own session: iOS stops the camera session when the app goes to the
     // background, while an audio-only session keeps running there (background audio mode).
@@ -54,11 +59,12 @@ final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     }
 
     /// Applies camera/quality/orientation and starts the session; safe to call again to reconfigure.
-    func start(lens: CameraLens, preset: StreamPreset, orientation: VideoOrientation) {
+    /// `depth`: use the LiDAR / TrueDepth version of the lens when the format allows it.
+    func start(lens: CameraLens, preset: StreamPreset, orientation: VideoOrientation, depth: Bool = false) {
         sessionQueue.async { [self] in
             self.orientation = orientation
             do {
-                try configure(lens: lens, preset: preset)
+                try configure(lens: lens, preset: preset, depth: depth)
             } catch {
                 onError?(error)
                 return
@@ -142,8 +148,17 @@ final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         }
     }
 
-    private func configure(lens: CameraLens, preset: StreamPreset) throws {
-        guard let device = lens.device else { throw CaptureError.cameraUnavailable }
+    private func configure(lens: CameraLens, preset: StreamPreset, depth: Bool) throws {
+        // Depth devices only have depth in some formats (often not 4K): fall back to the plain lens.
+        if depth, let depthDevice = lens.depthDevice, depthDevice.formats.contains(where: { Self.matches($0, preset, depth: true) }) {
+            try configure(lens: lens, device: depthDevice, preset: preset, depth: true)
+        } else {
+            guard let device = lens.device else { throw CaptureError.cameraUnavailable }
+            try configure(lens: lens, device: device, preset: preset, depth: false)
+        }
+    }
+
+    private func configure(lens: CameraLens, device: AVCaptureDevice, preset: StreamPreset, depth: Bool) throws {
         self.lens = lens
         session.beginConfiguration()
         defer { session.commitConfiguration() }
@@ -162,7 +177,18 @@ final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             guard session.canAddOutput(output) else { throw CaptureError.cannotAddOutput }
             session.addOutput(output)
         }
-        try applyFormat(preset, to: device)
+        if depth {
+            if !session.outputs.contains(depthOutput), session.canAddOutput(depthOutput) {
+                session.addOutput(depthOutput)
+                depthOutput.isFilteringEnabled = true // hole-filled, temporally smoothed depth
+                depthOutput.alwaysDiscardsLateDepthData = true
+                depthOutput.setDelegate(self, callbackQueue: depthQueue)
+            }
+        } else if session.outputs.contains(depthOutput) {
+            session.removeOutput(depthOutput)
+            depthQueue.async { [weak self] in self?.onDepth?(nil) }
+        }
+        try applyFormat(preset, to: device, depth: depth)
 
         if let connection = output.connection(with: .video) {
             // Stabilization buffers 1–3 frames: bad for latency.
@@ -176,14 +202,29 @@ final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         trackRotation(of: device)
     }
 
-    private func applyFormat(_ preset: StreamPreset, to device: AVCaptureDevice) throws {
+    private static func matches(_ format: AVCaptureDevice.Format, _ preset: StreamPreset, depth: Bool) -> Bool {
+        let dimensions = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
         let (width, height) = preset.dimensions
-        let candidates = device.formats.filter { format in
-            let dimensions = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
-            return dimensions.width == width && dimensions.height == height
-                && CMFormatDescriptionGetMediaSubType(format.formatDescription) == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+        let subtype = CMFormatDescriptionGetMediaSubType(format.formatDescription)
+        // Depth formats are often full-range only; effects convert everything to video range anyway.
+        let pixelFormatOK = subtype == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+            || (depth && subtype == kCVPixelFormatType_420YpCbCr8BiPlanarFullRange)
+        // LiDAR only delivers depth with 4:3 formats: take the 4:3 one of the same width, the effects
+        // crop it back to 16:9 on the GPU.
+        let sizeOK = dimensions.width == width
+            && (dimensions.height == height || (depth && dimensions.height == width * 3 / 4))
+        return sizeOK && pixelFormatOK && (!depth || !format.supportedDepthDataFormats.isEmpty)
+    }
+
+    private func applyFormat(_ preset: StreamPreset, to device: AVCaptureDevice, depth: Bool) throws {
+        let candidates = device.formats.filter { Self.matches($0, preset, depth: depth) }
+        // Prefer the exact 16:9 size; a 4:3 depth format only when that's all there is.
+        let (_, height) = preset.dimensions
+        let ordered = candidates.sorted {
+            (CMVideoFormatDescriptionGetDimensions($0.formatDescription).height == height ? 0 : 1)
+                < (CMVideoFormatDescriptionGetDimensions($1.formatDescription).height == height ? 0 : 1)
         }
-        guard let format = candidates.first(where: { $0.supports(fps: preset.fps) }) ?? candidates.first else { return }
+        guard let format = ordered.first(where: { $0.supports(fps: preset.fps) }) ?? ordered.first else { return }
         let fps = format.supports(fps: preset.fps) ? preset.fps : 30
 
         try device.lockForConfiguration()
@@ -198,6 +239,18 @@ final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         if format.isVideoHDRSupported {
             device.automaticallyAdjustsVideoHDREnabled = false
             device.isVideoHDREnabled = false
+        }
+        if depth {
+            // Largest float depth map the format offers (LiDAR ~320x240, TrueDepth ~640x480).
+            let depthFormats = format.supportedDepthDataFormats.filter {
+                let type = CMFormatDescriptionGetMediaSubType($0.formatDescription)
+                return type == kCVPixelFormatType_DepthFloat16 || type == kCVPixelFormatType_DisparityFloat16
+                    || type == kCVPixelFormatType_DepthFloat32 || type == kCVPixelFormatType_DisparityFloat32
+            }
+            device.activeDepthDataFormat = depthFormats.max {
+                CMVideoFormatDescriptionGetDimensions($0.formatDescription).width
+                    < CMVideoFormatDescriptionGetDimensions($1.formatDescription).width
+            }
         }
     }
 
@@ -216,10 +269,16 @@ final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     }
 
     private func applyRotation(_ angle: CGFloat) {
-        guard let connection = output.connection(with: .video),
-              connection.isVideoRotationAngleSupported(angle),
-              connection.videoRotationAngle != angle else { return }
-        connection.videoRotationAngle = angle
+        // The depth map must turn with the picture, or it wouldn't line up with the person.
+        for connection in [output.connection(with: .video), depthOutput.connection(with: .depthData)].compactMap({ $0 }) {
+            guard connection.isVideoRotationAngleSupported(angle), connection.videoRotationAngle != angle else { continue }
+            connection.videoRotationAngle = angle
+        }
+    }
+
+    func depthDataOutput(_ output: AVCaptureDepthDataOutput, didOutput depthData: AVDepthData, timestamp: CMTime,
+                         connection: AVCaptureConnection) {
+        onDepth?(depthData)
     }
 
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {

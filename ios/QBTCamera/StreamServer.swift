@@ -106,6 +106,19 @@ final class StreamServer {
         }
     }
 
+    /// Matte side stream for PC-side background processing. Tiny (≈1 Mbit/s), sent right before the
+    /// video frame with the same timestamp; not counted in the frame budget.
+    func sendAux(frame: Data, keyframe: Bool, ptsMicros: UInt64) {
+        queue.async { [self] in
+            guard let connection else { return }
+            var packet = QBTProtocol.makeHeader(type: .auxVideo, flags: keyframe ? [.keyframe] : [], payloadLength: frame.count,
+                                                ptsMicros: ptsMicros)
+            packet.append(frame)
+            stats.bytes += packet.count
+            connection.send(content: packet, completion: .idempotent)
+        }
+    }
+
     /// Small JSON message to the PC (capabilities, state). Not subject to the frame budget.
     func sendMessage(_ json: Data) {
         queue.async { [self] in

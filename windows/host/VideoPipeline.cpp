@@ -200,10 +200,13 @@ HRESULT VideoPipeline::Blit(Processor& processor, const DecodedFrame& frame, ID3
     videoContext_->VideoProcessorSetOutputTargetRect(vp, TRUE, &whole);
     videoContext_->VideoProcessorSetStreamAutoProcessingMode(vp, 0, FALSE);
 
-    // iPhone video: BT.709, limited (16–235) range.
+    // iPhone video: BT.709, limited (16–235) range; the matte stream is full range; composited
+    // frames are already RGB.
     D3D11_VIDEO_PROCESSOR_COLOR_SPACE inputSpace{};
     inputSpace.YCbCr_Matrix = 1;
-    inputSpace.Nominal_Range = D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_16_235;
+    inputSpace.Nominal_Range = frame.fullRange ? D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_0_255
+                                               : D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_16_235;
+    inputSpace.RGB_Range = 0;
     videoContext_->VideoProcessorSetStreamColorSpace(vp, 0, &inputSpace);
     D3D11_VIDEO_PROCESSOR_COLOR_SPACE outputSpace{};
     D3D11_VIDEO_COLOR background{};
@@ -296,6 +299,24 @@ HRESULT VideoPipeline::DrawIdle(ID3D11Texture2D* backBuffer) {
     const HRESULT hr = d2dContext_->EndDraw();
     d2dContext_->SetTarget(nullptr);
     return hr;
+}
+
+HRESULT VideoPipeline::Composite(const DecodedFrame& frame, const DecodedFrame* aux, const BackgroundSettings& settings,
+                                 DecodedFrame& out) {
+    std::lock_guard lock(mutex_);
+    if (compositorFailed_) return E_FAIL;
+    if (!compositorReady_) {
+        const HRESULT hr = compositor_.Initialize(
+            device_.Get(), context_.Get(), [this](const DecodedFrame& input, ID3D11Texture2D* target, UINT width, UINT height) {
+                return Blit(input.fullRange ? auxProcessor_ : compositeProcessor_, input, target, false, width, height);
+            });
+        if (FAILED(hr)) {
+            compositorFailed_ = true; // logged by the compositor; the picture just passes through
+            return hr;
+        }
+        compositorReady_ = true;
+    }
+    return compositor_.Process(frame, aux, settings, out);
 }
 
 HRESULT VideoPipeline::RenderNV12(const DecodedFrame& frame, UINT width, UINT height,

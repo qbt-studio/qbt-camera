@@ -69,6 +69,10 @@ struct App {
     std::thread worker;
     std::mutex statusMutex;
     HostStatus status;
+    // Background effect as the phone reports it; composited here when the phone sends a matte stream.
+    std::mutex backgroundMutex;
+    BackgroundSettings background;
+    bool backgroundOnPc = false;
 };
 
 App* g_app = nullptr;
@@ -99,7 +103,8 @@ void StreamLoop() {
     CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     App& app = *g_app;
     H264Decoder decoder;
-    if (FAILED(decoder.Initialize(app.pipeline.Device()))) {
+    H264Decoder auxDecoder; // the phone's matte stream for PC-side background effects
+    if (FAILED(decoder.Initialize(app.pipeline.Device())) || FAILED(auxDecoder.Initialize(app.pipeline.Device()))) {
         HostStatus status;
         status.phase = HostStatus::Phase::Error;
         status.error = L"Аппаратный декодер H.264 недоступен";
@@ -124,6 +129,10 @@ void StreamLoop() {
         // A cable is in but USB didn't work (PC not trusted yet, app just restarting): don't flap.
         if (!usb && app.usbPresent) usbRetryAfter = GetTickCount64() + kUsbRetryDelayMs;
         decoder.Flush();
+        auxDecoder.Flush();
+        DecodedFrame latestAux;
+        uint64_t latestAuxPts = 0;
+        ULONGLONG latestAuxTime = 0;
         SetStatus(MakeStatus(HostStatus::Phase::Connected, route, usb));
 
         uint32_t framesReceived = 0;
@@ -162,6 +171,16 @@ void StreamLoop() {
                              reinterpret_cast<LPARAM>(new std::string(payload.begin(), payload.end())));
                 continue;
             }
+            if (header.type == qbt::kPacketTypeAuxVideo) {
+                DecodedFrame aux;
+                if (auxDecoder.Decode(payload.data(), payload.size(), static_cast<LONGLONG>(header.ptsMicros) * 10, aux) == S_OK) {
+                    aux.fullRange = true;
+                    latestAux = std::move(aux);
+                    latestAuxPts = header.ptsMicros;
+                    latestAuxTime = GetTickCount64();
+                }
+                continue;
+            }
             if (header.type == qbt::kPacketTypeAudio) {
                 app.audio.Push(reinterpret_cast<const int16_t*>(payload.data()), payload.size() / sizeof(int16_t));
                 continue;
@@ -171,6 +190,24 @@ void StreamLoop() {
             DecodedFrame frame;
             const HRESULT hr = decoder.Decode(payload.data(), payload.size(), static_cast<LONGLONG>(header.ptsMicros) * 10, frame);
             if (hr == S_OK) {
+                BackgroundSettings background;
+                bool backgroundOnPc;
+                {
+                    std::lock_guard lock(app.backgroundMutex);
+                    background = app.background;
+                    backgroundOnPc = app.backgroundOnPc;
+                }
+                if (backgroundOnPc && background.mode != BackgroundSettings::Mode::Off) {
+                    // The matte for this very frame arrives just before it (same timestamp).
+                    const bool auxFresh = latestAux.texture && GetTickCount64() - latestAuxTime < 500;
+                    if (auxFresh && latestAuxPts != header.ptsMicros) qbt::Log("background: matte out of step by %lld us",
+                                                                                 static_cast<long long>(header.ptsMicros - latestAuxPts));
+                    const DecodedFrame* aux = auxFresh ? &latestAux : nullptr;
+                    if (aux || background.mode == BackgroundSettings::Mode::Chroma) {
+                        DecodedFrame composited;
+                        if (SUCCEEDED(app.pipeline.Composite(frame, aux, background, composited))) frame = std::move(composited);
+                    }
+                }
                 app.pipeline.Present(&frame);
                 if (app.cameraOutput.CameraInUse()) {
                     UINT cameraWidth = 0, cameraHeight = 0;
@@ -233,6 +270,26 @@ void HandlePhoneMessage(const std::string& json) {
         g_app->panel.OnCapabilities(message);
     } else if (event == "state") {
         g_app->panel.OnState(message);
+        // The phone is the source of truth for the background effect; the PC composites it when the
+        // phone says so ("processing":"pc") and sends the matte stream.
+        std::lock_guard lock(g_app->backgroundMutex);
+        BackgroundSettings& background = g_app->background;
+        const std::string mode = message.String("background");
+        background.mode = mode == "portrait" ? BackgroundSettings::Mode::Portrait
+                          : mode == "replace" ? BackgroundSettings::Mode::Replace
+                          : mode == "chroma"  ? BackgroundSettings::Mode::Chroma
+                                              : BackgroundSettings::Mode::Off;
+        background.blur = static_cast<float>(message.Number("blur", 0.6));
+        const std::string backdrop = message.String("backdrop");
+        const char* const backdrops[] = {"studio", "glow", "warm", "white", "black", "green"};
+        background.backdrop = 0;
+        for (int i = 0; i < 6; ++i) {
+            if (backdrop == backdrops[i]) background.backdrop = i;
+        }
+        background.keySensitivity = static_cast<float>(message.Number("keySensitivity", 0.5));
+        background.keySoftness = static_cast<float>(message.Number("keySoftness", 0.4));
+        background.keySpill = static_cast<float>(message.Number("keySpill", 0.7));
+        g_app->backgroundOnPc = message.String("processing") == "pc";
     }
 }
 
@@ -529,6 +586,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int showCo
         app.window, instance, app.settingsFolder,
         [](const std::string& json) {
             qbt::Log("command %s", json.c_str());
+            if (json.find("keyResample") != std::string::npos) { // chroma key composited here: sample again
+                std::lock_guard lock(g_app->backgroundMutex);
+                ++g_app->background.keyGeneration;
+            }
             g_app->link.SendCommand(json);
         },
         [](const std::wstring& deviceId) {

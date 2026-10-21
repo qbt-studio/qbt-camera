@@ -209,28 +209,75 @@ struct ColorPanel: View {
 struct BackgroundPanel: View {
     @EnvironmentObject private var engine: StreamEngine
 
+    private var settings: EffectSettings { engine.effectSettings }
+
+    private func change(_ body: (inout EffectSettings) -> Void) {
+        var updated = engine.effectSettings
+        body(&updated)
+        engine.updateEffects(updated)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                SectionCaption(title: "Фон и лицо", systemImage: "person.and.background.dotted")
+                SectionCaption(title: "Фон", systemImage: "person.and.background.dotted")
                 Spacer()
-                GlassChip(title: "Слежение", systemImage: "person.crop.rectangle", active: engine.effectSettings.framing) {
-                    var settings = engine.effectSettings
-                    settings.framing.toggle()
-                    engine.updateEffects(settings)
+                if settings.background == .portrait || settings.background == .replace {
+                    Text(engine.depthLabel)
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(Palette.secondaryText)
+                        .transition(.opacity)
                 }
             }
-            ValueSlider(title: "Размытие фона", systemImage: "camera.filters", tint: .purple, value: engine.effectSettings.blur,
-                        range: 0...1, format: { $0 < 0.01 ? "выкл" : "\(Int($0 * 100))%" }) { blur in
-                var settings = engine.effectSettings
-                settings.blur = blur
-                engine.updateEffects(settings)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    ForEach(BackgroundMode.allCases) { mode in
+                        GlassChip(title: mode.title, active: settings.background == mode) {
+                            withAnimation(.snappy) { change { $0.background = mode } }
+                        }
+                    }
+                }
             }
-            ValueSlider(title: "Ретушь кожи", systemImage: "face.smiling", tint: .pink, value: engine.effectSettings.retouch,
-                        range: 0...1, format: { $0 < 0.01 ? "выкл" : "\(Int($0 * 100))%" }) { retouch in
-                var settings = engine.effectSettings
-                settings.retouch = retouch
-                engine.updateEffects(settings)
+
+            switch settings.background {
+            case .portrait:
+                ValueSlider(title: "Размытие", systemImage: "camera.aperture", tint: .purple, value: settings.blur,
+                            range: 0...1, format: { "\(Int($0 * 100))%" }) { value in change { $0.blur = value } }
+            case .replace:
+                backdrops
+            case .chroma:
+                backdrops
+                ValueSlider(title: "Чувствительность", systemImage: "drop.halffull", tint: .green, value: settings.keySensitivity,
+                            range: 0...1, format: { "\(Int($0 * 100))%" }) { value in change { $0.keySensitivity = value } }
+                ValueSlider(title: "Мягкость края", systemImage: "circle.dotted", tint: .green, value: settings.keySoftness,
+                            range: 0...1, format: { "\(Int($0 * 100))%" }) { value in change { $0.keySoftness = value } }
+                ValueSlider(title: "Убрать отсвет", systemImage: "sparkles", tint: .green, value: settings.keySpill,
+                            range: 0...1, format: { "\(Int($0 * 100))%" }) { value in change { $0.keySpill = value } }
+                GlassChip(title: "Определить цвет фона", systemImage: "eyedropper") { engine.resampleKeyColor() }
+            case .off:
+                EmptyView()
+            }
+
+            HStack {
+                SectionCaption(title: "Лицо", systemImage: "face.smiling")
+                Spacer()
+                GlassChip(title: "Слежение", systemImage: "person.crop.rectangle", active: settings.framing) {
+                    change { $0.framing.toggle() }
+                }
+            }
+            ValueSlider(title: "Ретушь кожи", systemImage: "face.smiling", tint: .pink, value: settings.retouch,
+                        range: 0...1, format: { $0 < 0.01 ? "выкл" : "\(Int($0 * 100))%" }) { value in change { $0.retouch = value } }
+        }
+    }
+
+    private var backdrops: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                ForEach(Backdrop.allCases) { backdrop in
+                    GlassChip(title: backdrop.title, active: settings.backdrop == backdrop) {
+                        change { $0.backdrop = backdrop }
+                    }
+                }
             }
         }
     }

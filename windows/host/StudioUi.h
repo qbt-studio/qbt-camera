@@ -226,10 +226,15 @@ private:
     std::vector<double> shutterStops_;
     bool exposureAuto_ = true, whiteBalanceAuto_ = true, focusAuto_ = true;
     double iso_ = 0.3, shutter_ = 0.5, bias_ = 0.5, kelvin_ = 0.45, tint_ = 0.5, focus_ = 0.5, zoom_ = 0, torch_ = 0;
-    double blur_ = 0, retouch_ = 0, filterAmount_ = 1;
+    double blur_ = 0.6, retouch_ = 0, filterAmount_ = 1;
+    std::string background_ = "off", backdropName_ = "studio";
+    std::string processing_ = "pc"; // where background effects run: "pc" (this GPU) or "phone"
+    double keySensitivity_ = 0.5, keySoftness_ = 0.4, keySpill_ = 0.7;
+    std::string depthSensor_; // "lidar", "truedepth" or empty
+    bool depthActive_ = false;
     bool framing_ = false, mirror_ = false;
     std::string filter_ = "none";
-    double effectsMillis_ = 0;
+    double effectsMillis_ = 0, visionMillis_ = 0;
     bool microphoneAvailable_ = false, microphoneOn_ = false, microphoneDenied_ = false;
     std::string resolution_, orientation_;
     int fps_ = 0;

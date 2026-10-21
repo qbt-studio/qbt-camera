@@ -1,3 +1,4 @@
+import AVFoundation
 import CoreImage
 import CoreImage.CIFilterBuiltins
 import Metal
@@ -11,8 +12,15 @@ enum ColorFilter: String, CaseIterable, Identifiable {
 }
 
 struct EffectSettings: Equatable {
-    /// Background blur strength, 0 = off.
-    var blur = 0.0
+    var background = BackgroundMode.off
+    /// Portrait blur strength (like the aperture), 0…1.
+    var blur = 0.6
+    var backdrop = Backdrop.studio
+    /// Chroma key: how eagerly the screen color disappears, how soft the edge is, how much
+    /// green/blue cast is removed from hair and skin. All 0…1.
+    var keySensitivity = 0.5
+    var keySoftness = 0.4
+    var keySpill = 0.7
     /// Skin smoothing strength, 0 = off.
     var retouch = 0.0
     /// Keep the face(s) framed by cropping in, like Center Stage.
@@ -21,8 +29,12 @@ struct EffectSettings: Equatable {
     var filterAmount = 1.0
     /// Flip left-right before sending.
     var mirror = false
+    /// Background effects computed by the PC's GPU (the phone sends a small matte stream) instead of here.
+    var processOnPC = false
 
-    var isActive: Bool { blur > 0.01 || retouch > 0.01 || framing || filter != .none || mirror }
+    var isActive: Bool { background != .off || retouch > 0.01 || framing || filter != .none || mirror }
+    /// Depth (LiDAR / TrueDepth) makes these look like a real lens; the camera switches to a depth device.
+    var wantsDepth: Bool { background == .portrait || background == .replace }
 }
 
 /// Real-time effects applied on the phone before encoding: Vision finds people and faces on the
@@ -54,12 +66,34 @@ final class VideoEffects {
         return request
     }()
     private let faceDetection = VNDetectFaceRectanglesRequest()
+    // The person mask is computed on the very frame being sent (a late mask leaves trails when
+    // you move); faces are fine a frame or two late and stay in the background pass.
+    private let liveSegmentation: VNGeneratePersonSegmentationRequest = {
+        let request = VNGeneratePersonSegmentationRequest()
+        request.qualityLevel = .balanced // runs alongside the GPU (pipelined), so it fits in a 30 fps frame
+        request.outputPixelFormat = kCVPixelFormatType_OneComponent8
+        return request
+    }()
+    private let coolSegmentation: VNGeneratePersonSegmentationRequest = {
+        let request = VNGeneratePersonSegmentationRequest()
+        request.qualityLevel = .fast
+        request.outputPixelFormat = kCVPixelFormatType_OneComponent8
+        return request
+    }()
 
     private var pool: CVPixelBufferPool?
     private var poolSize = CGSize.zero
     private var faces: [CGRect] = [] // snapshot of latestFaces for the frame being rendered
     private var framingRect: CGRect?
     private var processingMillis = 0.0
+    private var framesOnGPU = 0
+    private let deliveryQueue = DispatchQueue(label: "qbt.effects.delivery", qos: .userInteractive)
+    private var visionMillis = 0.0
+    private var auxPool: CVPixelBufferPool?
+    private var auxPoolSize = CGSize.zero
+    /// Matte frames for PC-side processing, called on the delivery queue right before the picture.
+    var onAuxFrame: ((CVPixelBuffer, CMTime) -> Void)?
+    private let background: BackgroundEngine
 
     init() {
         if let device = MTLCreateSystemDefaultDevice() {
@@ -67,6 +101,18 @@ final class VideoEffects {
         } else {
             context = CIContext(options: [.cacheIntermediates: false])
         }
+        background = BackgroundEngine(context: context)
+    }
+
+    /// Depth from the camera (LiDAR / TrueDepth), any thread.
+    func updateDepth(_ depth: AVDepthData?) {
+        background.setDepth(depth)
+    }
+
+    var hasDepth: Bool { background.hasDepth }
+
+    func resampleKeyColor() {
+        background.resampleKeyColor()
     }
 
     func update(_ newSettings: EffectSettings) {
@@ -77,56 +123,181 @@ final class VideoEffects {
 
     /// Average GPU+Vision time per processed frame, for the PC's status line.
     var lastProcessingMillis: Double { lock.withLock { processingMillis } }
+    /// Part of it spent waiting for the person mask.
+    var lastVisionMillis: Double { lock.withLock { visionMillis } }
 
-    /// Called on the capture queue for every frame. Returns the input when no effect is on.
-    func process(_ pixelBuffer: CVPixelBuffer) -> CVPixelBuffer {
+    /// Called on the capture queue for every frame; `deliver` gets the result (the input itself when
+    /// no effect is on) on the delivery queue, always in capture order.
+    ///
+    /// Pipelined: the GPU renders frame N while Vision already works on frame N+1, so the frame rate
+    /// is set by the slower of the two instead of their sum. At most two frames are on the GPU;
+    /// beyond that a frame is dropped rather than queued (latency must not grow).
+    func process(_ pixelBuffer: CVPixelBuffer, pts: CMTime, deliver: @escaping (CVPixelBuffer, CMTime) -> Void) {
         let settings = current
         guard settings.isActive else {
             framingRect = nil
-            return pixelBuffer
+            deliveryQueue.async { deliver(pixelBuffer, pts) }
+            return
         }
+        guard lock.withLock({ framesOnGPU < 2 }) else { return }
         let started = CACurrentMediaTime()
         let width = CVPixelBufferGetWidth(pixelBuffer)
         let height = CVPixelBufferGetHeight(pixelBuffer)
         let extent = CGRect(x: 0, y: 0, width: width, height: height)
+        let output16x9 = Self.sixteenByNine(extent)
+        // On the PC: the picture leaves without the background effect, plus a small matte stream;
+        // the PC's GPU refines and composites. The phone keeps only the Neural Engine work (cool).
+        let remote = settings.processOnPC && settings.background != .off && onAuxFrame != nil
 
-        // 1. Vision in the background; use whatever it finished last.
-        let wantsMask = settings.blur > 0.01
-        let wantsFaces = settings.framing || settings.retouch > 0.01
-        scheduleVision(on: pixelBuffer, mask: wantsMask, faces: wantsFaces)
-        let mask: CVPixelBuffer?
+        // 1. Faces in the background (a frame or two late is fine); the person mask on this very frame.
+        let wantsMask = settings.background == .portrait || settings.background == .replace
+        let wantsFaces = settings.framing || settings.retouch > 0.01 || settings.background == .portrait
+        scheduleVision(on: pixelBuffer, mask: false, faces: wantsFaces)
         let lastFaceTime: Double
-        (mask, faces, lastFaceTime) = lock.withLock {
-            (wantsMask ? latestMask : nil, wantsFaces ? latestFaces : [], self.lastFaceTime)
+        (faces, lastFaceTime) = lock.withLock { (wantsFaces ? latestFaces : [], self.lastFaceTime) }
+        var mask: CVPixelBuffer?
+        if wantsMask {
+            let visionStarted = CACurrentMediaTime()
+            // A fresh handler per frame: VNSequenceRequestHandler smooths masks over time, which drags
+            // the mask behind a moving hand. Our own edge-aware smoothing handles flicker instead.
+            // A hot iPhone gets the lighter mask: iOS would otherwise start throttling the camera.
+            let hot = ProcessInfo.processInfo.thermalState.rawValue >= ProcessInfo.ThermalState.serious.rawValue
+            let request = hot ? coolSegmentation : liveSegmentation
+            try? VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: .up).perform([request])
+            mask = request.results?.first?.pixelBuffer
+            let visionTime = (CACurrentMediaTime() - visionStarted) * 1000
+            lock.withLock { visionMillis = visionMillis * 0.9 + visionTime * 0.1 }
         }
 
-        // 2. Core Image chain: retouch → background blur → color → framing crop.
+        // 2. Core Image chain: retouch → background → color → geometry.
         var image = CIImage(cvPixelBuffer: pixelBuffer)
         if settings.retouch > 0.01, !faces.isEmpty {
             image = retouch(image, amount: settings.retouch, extent: extent)
         }
-        if let mask {
-            image = blurBackground(image, mask: mask, amount: settings.blur, extent: extent)
+        var aux: CIImage?
+        if settings.background != .off {
+            if !remote {
+                image = background.render(image, extent: extent, settings: settings, personMask: mask, faces: faces)
+            } else if settings.background != .chroma, // the PC keys green screens by itself
+                      let coarse = background.coarseMatte(extent: extent, settings: settings, personMask: mask, faces: faces) {
+                aux = coarse.transformed(by: CGAffineTransform(scaleX: extent.width / coarse.extent.width,
+                                                                y: extent.height / coarse.extent.height))
+            }
         }
         if settings.filter != .none {
             image = applyColor(settings.filter, amount: settings.filterAmount, to: image, extent: extent)
         }
-        if settings.framing {
-            image = frame(image, extent: extent, holdFace: started - lastFaceTime < 2)
-        } else {
-            framingRect = nil
-        }
-        if settings.mirror {
-            image = image.transformed(by: CGAffineTransform(a: -1, b: 0, c: 0, d: 1, tx: extent.width, ty: 0))
-        }
 
-        guard let output = makeOutputBuffer(width: width, height: height) else { return pixelBuffer }
+        // Geometry — face framing, mirror, 16:9 — identical for the picture and the matte.
+        let framing = settings.framing ? nextFramingRect(extent: extent, holdFace: started - lastFaceTime < 2) : nil
+        if !settings.framing { framingRect = nil }
+        func geometry(_ input: CIImage) -> CIImage {
+            var result = input
+            if let framing {
+                let scale = extent.width / framing.width
+                result = result.cropped(to: framing)
+                    .transformed(by: CGAffineTransform(translationX: -framing.minX, y: -framing.minY)
+                        .concatenating(CGAffineTransform(scaleX: scale, y: scale)))
+            }
+            if settings.mirror {
+                result = result.transformed(by: CGAffineTransform(a: -1, b: 0, c: 0, d: 1, tx: extent.width, ty: 0))
+            }
+            // 4:3 depth formats (LiDAR) leave as 16:9: the middle of the picture.
+            if output16x9 != extent {
+                result = result.cropped(to: output16x9)
+                    .transformed(by: CGAffineTransform(translationX: -output16x9.minX, y: -output16x9.minY))
+            }
+            return result
+        }
+        image = geometry(image)
+
+        let outputExtent = CGRect(origin: .zero, size: output16x9.size)
+        guard let output = makeOutputBuffer(width: Int(outputExtent.width), height: Int(outputExtent.height)) else {
+            deliveryQueue.async { deliver(pixelBuffer, pts) }
+            return
+        }
         CVBufferPropagateAttachments(pixelBuffer, output)
-        context.render(image.cropped(to: extent), to: output, bounds: extent, colorSpace: outputColorSpace)
+        let destination = CIRenderDestination(pixelBuffer: output)
+        destination.colorSpace = outputColorSpace
+        guard let task = try? context.startTask(toRender: image.cropped(to: outputExtent), from: outputExtent, to: destination,
+                                                at: .zero) else {
+            deliveryQueue.async { deliver(pixelBuffer, pts) }
+            return
+        }
 
-        let millis = (CACurrentMediaTime() - started) * 1000
-        lock.withLock { processingMillis = processingMillis * 0.9 + millis * 0.1 }
-        return output
+        // The matte stream: [foreground | blur amount] side by side, gray, quarter resolution.
+        var auxRender: (task: CIRenderTask, buffer: CVPixelBuffer)?
+        if let aux {
+            let quarterWidth = CGFloat(Int(outputExtent.width / 4) & ~1), quarterHeight = CGFloat(Int(outputExtent.height / 4) & ~1)
+            let shaped = geometry(aux).transformed(by: CGAffineTransform(scaleX: quarterWidth / outputExtent.width,
+                                                                          y: quarterHeight / outputExtent.height))
+            let quarter = CGRect(x: 0, y: 0, width: quarterWidth, height: quarterHeight)
+            func gray(_ channel: CIVector) -> CIImage {
+                shaped.applyingFilter("CIColorMatrix", parameters: ["inputRVector": channel, "inputGVector": channel,
+                                                                    "inputBVector": channel,
+                                                                    "inputAVector": CIVector(x: 0, y: 0, z: 0, w: 1)])
+                    .cropped(to: quarter)
+            }
+            let foreground = gray(CIVector(x: 1, y: 0, z: 0, w: 0))
+            let blur = gray(CIVector(x: 0, y: 1, z: 0, w: 0)).transformed(by: CGAffineTransform(translationX: quarterWidth, y: 0))
+            let packedExtent = CGRect(x: 0, y: 0, width: quarterWidth * 2, height: quarterHeight)
+            if let buffer = makeAuxBuffer(width: Int(packedExtent.width), height: Int(packedExtent.height)) {
+                let auxDestination = CIRenderDestination(pixelBuffer: buffer)
+                auxDestination.colorSpace = nil // raw values: 0…1 → 0…255
+                if let auxTask = try? context.startTask(toRender: blur.composited(over: foreground), from: packedExtent,
+                                                         to: auxDestination, at: .zero) {
+                    auxRender = (auxTask, buffer)
+                }
+            }
+        }
+
+        lock.withLock { framesOnGPU += 1 }
+        deliveryQueue.async { [self] in
+            _ = try? task.waitUntilCompleted()
+            if let auxRender {
+                _ = try? auxRender.task.waitUntilCompleted()
+                onAuxFrame?(auxRender.buffer, pts) // before the picture: the PC pairs them by timestamp
+            }
+            let millis = (CACurrentMediaTime() - started) * 1000
+            lock.withLock {
+                framesOnGPU -= 1
+                processingMillis = processingMillis * 0.9 + millis * 0.1
+            }
+            deliver(output, pts)
+        }
+    }
+
+    /// Full-range NV12 buffers for the matte stream.
+    private func makeAuxBuffer(width: Int, height: Int) -> CVPixelBuffer? {
+        let size = CGSize(width: width, height: height)
+        if auxPool == nil || auxPoolSize != size {
+            let attributes: [String: Any] = [
+                kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
+                kCVPixelBufferWidthKey as String: width,
+                kCVPixelBufferHeightKey as String: height,
+                kCVPixelBufferIOSurfacePropertiesKey as String: [:] as [String: Any],
+                kCVPixelBufferMetalCompatibilityKey as String: true,
+            ]
+            auxPool = nil
+            CVPixelBufferPoolCreate(nil, nil, attributes as CFDictionary, &auxPool)
+            auxPoolSize = size
+        }
+        guard let auxPool else { return nil }
+        var buffer: CVPixelBuffer?
+        CVPixelBufferPoolCreatePixelBuffer(nil, auxPool, &buffer)
+        return buffer
+    }
+
+    /// The centered 16:9 (or 9:16) part of a frame; the frame itself when it already is.
+    private static func sixteenByNine(_ extent: CGRect) -> CGRect {
+        let landscape = extent.width >= extent.height
+        let long = max(extent.width, extent.height), short = min(extent.width, extent.height)
+        let wantedShort = (long * 9 / 16).rounded(.down) - ((long * 9 / 16).rounded(.down)).truncatingRemainder(dividingBy: 2)
+        guard abs(short - wantedShort) > 2 else { return extent }
+        if landscape {
+            return CGRect(x: 0, y: ((extent.height - wantedShort) / 2).rounded(), width: extent.width, height: wantedShort)
+        }
+        return CGRect(x: ((extent.width - wantedShort) / 2).rounded(), y: 0, width: wantedShort, height: extent.height)
     }
 
     /// Starts a Vision pass on this frame unless the previous one is still running.
@@ -183,32 +354,6 @@ final class VideoEffects {
         return blend.outputImage ?? image
     }
 
-    /// Person stays sharp, everything else gets a lens-like blur (computed at quarter resolution).
-    private func blurBackground(_ image: CIImage, mask: CVPixelBuffer, amount: Double, extent: CGRect) -> CIImage {
-        let maskImage = CIImage(cvPixelBuffer: mask)
-        let scaledMask = maskImage
-            .transformed(by: CGAffineTransform(scaleX: extent.width / maskImage.extent.width,
-                                               y: extent.height / maskImage.extent.height))
-            .clampedToExtent()
-            .applyingGaussianBlur(sigma: 2) // soften the cut-out edge
-            .cropped(to: extent)
-
-        let downscale: CGFloat = 0.25
-        let small = image.transformed(by: CGAffineTransform(scaleX: downscale, y: downscale))
-        let sigma = max(2, Double(small.extent.width) * 0.025 * amount)
-        let blurred = small.clampedToExtent()
-            .applyingGaussianBlur(sigma: sigma)
-            .cropped(to: small.extent)
-            .transformed(by: CGAffineTransform(scaleX: 1 / downscale, y: 1 / downscale))
-            .cropped(to: extent)
-
-        let blend = CIFilter.blendWithMask()
-        blend.inputImage = image
-        blend.backgroundImage = blurred
-        blend.maskImage = scaledMask
-        return blend.outputImage ?? image
-    }
-
     private func applyColor(_ filter: ColorFilter, amount: Double, to image: CIImage, extent: CGRect) -> CIImage {
         func channels(_ red: CGFloat, _ green: CGFloat, _ blue: CGFloat, _ input: CIImage) -> CIImage {
             let matrix = CIFilter.colorMatrix()
@@ -261,7 +406,7 @@ final class VideoEffects {
     }
 
     /// Digital pan/zoom that keeps the face(s) in the upper-middle third, gliding smoothly.
-    private func frame(_ image: CIImage, extent: CGRect, holdFace: Bool) -> CIImage {
+    private func nextFramingRect(extent: CGRect, holdFace: Bool) -> CGRect {
         let aspect = extent.width / extent.height
         var target = extent
         if !faces.isEmpty {
@@ -297,11 +442,7 @@ final class VideoEffects {
                           width: current.width + (goal.width - current.width) * smoothing,
                           height: current.height + (goal.height - current.height) * smoothing)
         framingRect = next
-
-        let scale = extent.width / next.width
-        return image.cropped(to: next)
-            .transformed(by: CGAffineTransform(translationX: -next.minX, y: -next.minY)
-                .concatenating(CGAffineTransform(scaleX: scale, y: scale)))
+        return next
     }
 
     // MARK: - Buffers

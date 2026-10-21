@@ -26,6 +26,7 @@ target_link_libraries(QBTVirtualCamera PRIVATE mfplat mfuuid ole32 advapi32 gdi3
 # The Windows app: receives the iPhone stream, decodes on the GPU, previews and feeds the camera.
 add_executable(QBTCamera WIN32
     host/AudioOutput.cpp
+    host/BackgroundCompositor.cpp
     host/StudioUi.cpp
     host/Decoder.cpp
     host/Main.cpp

@@ -65,6 +65,10 @@ enum : int {
     kFpsBase = 130,
     kOrientationBase = 140,
     kBlackout = 150, kPrompterVisible, kPrompterPlaying, kPrompterSpeed, kAutostart,
+    kBackgroundBase = 160,
+    kBackdropBase = 170,
+    kKeySensitivity = 180, kKeySoftness, kKeySpill, kKeyResample,
+    kProcessingBase = 190,
     // Animation slots that aren't widgets.
     kTabIndicatorX = 5000, kLensIndicatorX, kLensIndicatorWidth, kScroll, kThemeBlend,
 };
@@ -81,13 +85,17 @@ const wchar_t* const kOrientationTitles[4] = {L"Авто", L"Горизонта�
 // Shutter speeds in microseconds: 1/8000 … 1/15 (1/50 and 1/100 avoid flicker under 50 Hz lights).
 constexpr double kShutterStops[] = {125, 250, 500, 1000, 2000, 4000, 5000, 8000, 10000, 16667, 20000, 33333, 40000, 66667};
 constexpr double kMinKelvin = 2500, kMaxKelvin = 8000;
+const char* const kBackgroundNames[4] = {"off", "portrait", "replace", "chroma"};
+const wchar_t* const kBackgroundTitles[4] = {L"Выкл", L"Портрет", L"Замена", L"Хромакей"};
+const char* const kBackdropNames[6] = {"studio", "glow", "warm", "white", "black", "green"};
+const wchar_t* const kBackdropTitles[6] = {L"Студия", L"QBT", L"Тёплый", L"Белый", L"Чёрный", L"Зелёный"};
 
 // Rows inside the grouped settings, in DIPs.
 constexpr float kRowPad = 14, kSliderRow = 58, kSwitchRow = 46, kHintRow = 58, kChipHeight = 34, kGroupTitle = 26,
                 kGroupGap = 18;
 
 std::string Format(const char* format, ...) {
-    char buffer[256];
+    char buffer[512];
     va_list args;
     va_start(args, format);
     vsnprintf(buffer, sizeof(buffer), format, args);
@@ -877,10 +885,86 @@ float StudioUi::EffectsTab(float x, float y, float width) {
     bool changed = false, toggled = false;
 
     {
-        const Rect group = Platter(x, y, width, kSliderRow, L"Фон");
-        SliderRow(kBlur, ix, group.top, iw, L"Размытие фона", blur_ < 0.01 ? std::wstring(L"выкл") : WideFormat(L"%.0f %%", blur_ * 100),
-                  blur_, connected_, changed);
-        if (changed) SendEffects();
+        // Background: mode, then what that mode needs.
+        const bool portrait = background_ == "portrait", replace = background_ == "replace", chroma = background_ == "chroma";
+        const float chips = 14 + kChipHeight + 14;
+        const float backdrops = kChipHeight * 2 + 8 + 14;
+        float height = chips;
+        if (background_ != "off") height += kChipHeight + 14 + 14;
+        if (portrait) height += kSliderRow + 26;
+        if (replace) height += backdrops + 26;
+        if (chroma) height += backdrops + kSliderRow * 3 + kChipHeight + 14;
+        const Rect group = Platter(x, y, width, height, L"Фон");
+        float row = group.top + 14;
+        const float quarterWidth = (iw - 8 * 3) / 4;
+        for (int i = 0; i < 4; ++i) {
+            const float cx = ix + i * (quarterWidth + 8);
+            if (Chip(kBackgroundBase + i, {cx, row, cx + quarterWidth, row + kChipHeight}, kBackgroundTitles[i],
+                     background_ == kBackgroundNames[i], connected_)) {
+                background_ = kBackgroundNames[i];
+                SendEffects();
+            }
+        }
+        row += kChipHeight + 14;
+        if (background_ != "off") {
+            // Where the work happens: the PC's GPU (cool phone, full-resolution edges) or the iPhone.
+            Separator(ix, row, iw + kRowPad);
+            row += 14;
+            const wchar_t* titles[2] = {L"Считает компьютер", L"Считает iPhone"};
+            const char* names[2] = {"pc", "phone"};
+            const float halfWidth = (iw - 8) / 2;
+            for (int i = 0; i < 2; ++i) {
+                const float cx = ix + i * (halfWidth + 8);
+                if (Chip(kProcessingBase + i, {cx, row, cx + halfWidth, row + kChipHeight}, titles[i], processing_ == names[i],
+                         connected_)) {
+                    processing_ = names[i];
+                    SendEffects();
+                }
+            }
+            row += kChipHeight + 14;
+        }
+        if (portrait || replace) {
+            // Where the depth comes from: real sensors make the blur follow the distance like a lens.
+            std::wstring source = L"Глубина: по силуэту (нейросеть)";
+            if (depthActive_ && depthSensor_ == "lidar") source = L"Глубина: LiDAR + нейросеть";
+            else if (depthActive_ && depthSensor_ == "truedepth") source = L"Глубина: TrueDepth + нейросеть";
+            Separator(ix, row, iw + kRowPad);
+            Text(source, {ix, row, ix + iw, row + 26}, smallFormat_.Get(), depthActive_ ? kGreen : palette_.tertiary);
+            row += 26;
+        }
+        if (portrait) {
+            SliderRow(kBlur, ix, row, iw, L"Размытие", WideFormat(L"%.0f %%", blur_ * 100), blur_, connected_, changed);
+            if (changed) SendEffects();
+        }
+        if (replace || chroma) {
+            if (chroma) Separator(ix, row, iw + kRowPad);
+            const float thirdWidth = (iw - 16) / 3;
+            float top = row + (chroma ? 14 : 0);
+            for (int i = 0; i < 6; ++i) {
+                const float cx = ix + (i % 3) * (thirdWidth + 8);
+                const float cy = top + (i / 3) * (kChipHeight + 8);
+                if (Chip(kBackdropBase + i, {cx, cy, cx + thirdWidth, cy + kChipHeight}, kBackdropTitles[i],
+                         backdropName_ == kBackdropNames[i], connected_)) {
+                    backdropName_ = kBackdropNames[i];
+                    SendEffects();
+                }
+            }
+            row = top + kChipHeight * 2 + 8 + 14;
+        }
+        if (chroma) {
+            Separator(ix, row, iw + kRowPad);
+            row = SliderRow(kKeySensitivity, ix, row, iw, L"Чувствительность", WideFormat(L"%.0f %%", keySensitivity_ * 100),
+                            keySensitivity_, connected_, changed);
+            if (changed) SendEffects();
+            row = SliderRow(kKeySoftness, ix, row, iw, L"Мягкость края", WideFormat(L"%.0f %%", keySoftness_ * 100), keySoftness_,
+                            connected_, changed);
+            if (changed) SendEffects();
+            row = SliderRow(kKeySpill, ix, row, iw, L"Убрать зелёный отсвет", WideFormat(L"%.0f %%", keySpill_ * 100), keySpill_,
+                            connected_, changed);
+            if (changed) SendEffects();
+            if (Chip(kKeyResample, {ix, row + 4, ix + iw, row + 4 + kChipHeight}, L"Определить цвет фона заново", false, connected_))
+                Queue(Group::Effects, R"({"cmd":"effects","keyResample":true})");
+        }
         y = group.bottom + kGroupGap;
     }
     {
@@ -923,7 +1007,9 @@ float StudioUi::EffectsTab(float x, float y, float width) {
 
     std::wstring info;
     if (!connected_) info = L"Подключите iPhone, чтобы настроить эффекты.";
-    else if (effectsMillis_ > 0.05) info = WideFormat(L"Эффекты считает iPhone (нейропроцессор и GPU): %.1f мс на кадр.", effectsMillis_);
+    else if (effectsMillis_ > 0.05)
+        info = WideFormat(L"Эффекты считает iPhone: %.1f мс на кадр (нейросеть %.1f мс, остальное — видеокарта).", effectsMillis_,
+                          visionMillis_);
     else info = L"Эффекты выключены: видео идёт без обработки.";
     return InfoText(x + 6, y, width - 12, info, palette_.tertiary);
 }
@@ -1395,6 +1481,9 @@ void StudioUi::OnCapabilities(const JsonObject& caps) {
     manualFocus_ = caps.Bool("manualFocus");
     hasTorch_ = caps.Bool("torch");
     microphoneAvailable_ = caps.Bool("microphone");
+    depthSensor_ = caps.String("depth");
+    // Background effects run on this PC's GPU by default: tell the phone as soon as it connects.
+    Queue(Group::Effects, Format(R"({"cmd":"effects","processing":"%s"})", processing_.c_str()));
     minIso_ = std::max(1.0, caps.Number("minISO", 50));
     maxIso_ = std::max(minIso_ + 1, caps.Number("maxISO", 3200));
     minZoom_ = std::max(1.0, caps.Number("minZoom", 1));
@@ -1435,7 +1524,14 @@ void StudioUi::OnState(const JsonObject& state) {
     if (!RecentlyTouched(Group::Torch)) torch_ = std::clamp(state.Number("torch"), 0.0, 1.0);
     torchAvailable_ = state.Bool("torchAvailable", true);
     if (!RecentlyTouched(Group::Effects) && state.Has("blur")) {
-        blur_ = state.Number("blur");
+        blur_ = state.Number("blur", 0.6);
+        if (state.Has("background")) background_ = state.String("background");
+        else background_ = blur_ > 0.01 ? "portrait" : "off"; // older iPhone app
+        if (state.Has("backdrop")) backdropName_ = state.String("backdrop");
+        if (state.Has("processing")) processing_ = state.String("processing");
+        keySensitivity_ = state.Number("keySensitivity", 0.5);
+        keySoftness_ = state.Number("keySoftness", 0.4);
+        keySpill_ = state.Number("keySpill", 0.7);
         retouch_ = state.Number("retouch");
         filterAmount_ = state.Number("filterAmount", 1);
         framing_ = state.Bool("framing");
@@ -1444,6 +1540,7 @@ void StudioUi::OnState(const JsonObject& state) {
         filter_ = filter.empty() ? "none" : filter;
     }
     effectsMillis_ = state.Number("effectsMs");
+    visionMillis_ = state.Number("visionMs");
     if (!RecentlyTouched(Group::Audio) && state.Has("audioEnabled")) {
         microphoneOn_ = state.Bool("audioEnabled");
         microphoneDenied_ = state.Bool("microphoneDenied");
@@ -1460,6 +1557,7 @@ void StudioUi::OnState(const JsonObject& state) {
         prompterSpeed_ = std::clamp((state.Number("prompterSpeed", 2) - 1) / 4, 0.0, 1.0);
     }
     thermal_ = state.String("thermal");
+    depthActive_ = state.Bool("depthActive");
     roundTripMillis_ = state.Has("rttMs") ? state.Number("rttMs") : -1;
     phonePaused_ = state.Bool("paused");
     Invalidate();
@@ -1514,8 +1612,12 @@ void StudioUi::SendFocus() {
 
 void StudioUi::SendEffects() {
     Queue(Group::Effects,
-          Format(R"({"cmd":"effects","blur":%.2f,"retouch":%.2f,"framing":%s,"filter":"%s","filterAmount":%.2f,"mirror":%s})", blur_,
-                 retouch_, framing_ ? "true" : "false", filter_.c_str(), filterAmount_, mirror_ ? "true" : "false"));
+          Format(R"({"cmd":"effects","processing":"%s","background":"%s","blur":%.2f,"backdrop":"%s","keySensitivity":%.2f,)"
+                 R"("keySoftness":%.2f,)"
+                 R"("keySpill":%.2f,"retouch":%.2f,"framing":%s,"filter":"%s","filterAmount":%.2f,"mirror":%s})",
+                 processing_.c_str(), background_.c_str(), blur_, backdropName_.c_str(), keySensitivity_, keySoftness_, keySpill_,
+                 retouch_,
+                 framing_ ? "true" : "false", filter_.c_str(), filterAmount_, mirror_ ? "true" : "false"));
 }
 
 void StudioUi::SendPreset() {

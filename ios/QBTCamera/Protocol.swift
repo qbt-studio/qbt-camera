@@ -35,6 +35,8 @@ enum QBTProtocol {
         case video = 1
         case message = 2
         case audio = 3
+        /// Side stream for background processing on the PC: coarse matte | blur amount, H.264.
+        case auxVideo = 4
     }
 
     struct Flags: OptionSet {

@@ -49,20 +49,74 @@ To update to a new version, run `Install QBT Camera.cmd` from the new package �
 
 **From the App Store** (when available): search for **QBT Camera** and install.
 
-**Free, from the source code** (until the App Store version is out). You need a Mac with Xcode and a
-free Apple ID:
+Until the App Store release is published, you can install the app for free using any of the methods below. **No Mac or paid developer account is required.**
 
-1. On the Mac, install **Xcode** from the Mac App Store and sign in: Xcode → Settings → Accounts → **+**
-   → Apple ID.
-2. Open `ios/QBTCamera.xcodeproj`, select the **QBTCamera** target → **Signing & Capabilities**, choose
-   your Apple ID as the **Team** and change the **Bundle Identifier** to something unique
-   (for example `com.yourname.qbtcamera`).
+---
+
+### Option A: Install via AltStore (Windows & Mac — Recommended)
+
+[AltStore](https://altstore.io/) is a free tool that installs `.ipa` apps onto your iPhone using a free Apple ID and automatically refreshes them over home Wi‑Fi.
+
+#### 1. Setup on Windows
+1. Download and install **iTunes** and **iCloud** (direct versions from Apple, not Microsoft Store):
+   - [iTunes for Windows (64-bit)](https://www.apple.com/itunes/download/win64)
+   - [iCloud for Windows](https://updates.cdn-apple.com/2020/windows/001-39935-20200911-1A70AA56-F448-11EA-8109-99D40A1A04C6/iCloudSetup.exe)
+2. Download and install **[AltServer for Windows](https://altstore.io/)**.
+3. Connect your iPhone to your PC with a USB cable. Open iTunes, click the phone icon, and check **“Sync with this iPhone over Wi‑Fi”** → Apply.
+
+#### 2. Install AltStore onto iPhone
+1. Run **AltServer** on your PC. Look for the AltServer diamond icon in the Windows taskbar tray (near the clock).
+2. Click the AltServer icon → **Install AltStore** → select your iPhone.
+3. Enter your **Apple ID and password** (used securely by Apple to sign the app certificate).
+4. After a moment, the **AltStore** icon appears on your iPhone home screen.
+
+#### 3. Trust certificate & enable Developer Mode on iPhone
+1. On iPhone: open **Settings → General → VPN & Device Management** → tap your Apple ID under Developer App → tap **Trust**.
+2. On iOS 16, 17, and 18+: open **Settings → Privacy & Security → Developer Mode** → turn it **ON** and restart the iPhone when prompted.
+
+#### 4. Install QBT Camera
+1. On your iPhone, open Safari and go to **[QBT Camera Releases](https://github.com/qbt-studio/qbt-camera/releases/latest)**.
+2. Tap **`QBTCamera.ipa`** to download it.
+3. Open the **AltStore** app on your iPhone:
+   - Go to the **My Apps** tab.
+   - Tap the **`+`** icon in the top-left corner.
+   - Select the downloaded **`QBTCamera.ipa`** from Files.
+4. AltStore will sign and install **QBT Camera**. Done!
+
+> **Automatic background refresh:** Free Apple IDs sign apps for 7 days. Because you enabled Wi‑Fi sync in iTunes, AltStore automatically refreshes QBT Camera in the background over your home Wi‑Fi whenever your PC is on. You never have to plug the phone in or reinstall manually.
+
+---
+
+### Option B: Install via Sideloadly (Windows & Mac — Fastest 1-Click)
+
+[Sideloadly](https://sideloadly.io/) is an easy desktop tool to install `.ipa` files directly from your PC:
+
+1. Download and install **[Sideloadly](https://sideloadly.io/)** on Windows.
+2. Connect your iPhone to the PC via USB cable and tap **Trust this computer** on the phone.
+3. Download **`QBTCamera.ipa`** from [Releases](https://github.com/qbt-studio/qbt-camera/releases/latest) to your PC.
+4. Drag and drop `QBTCamera.ipa` into the Sideloadly window.
+5. Enter your Apple ID and click **Start**.
+6. On your iPhone, go to **Settings → General → VPN & Device Management** → tap your Apple ID → **Trust**. (On iOS 16+, also enable Developer Mode in Settings → Privacy & Security).
+
+---
+
+### Option C: TrollStore (Permanent install, iOS 14.0 – 17.0)
+
+If your device supports **TrollStore**:
+1. Download **`QBTCamera.ipa`** on your iPhone.
+2. Share / Open in **TrollStore** → Install.
+3. The app is installed permanently without any 7-day expiration or Apple ID requirement.
+
+---
+
+### Option D: Build from Source Code with Xcode (Mac only)
+
+If you have a Mac with Xcode and want to build directly from sources:
+
+1. On the Mac, install **Xcode** from the Mac App Store and sign in: Xcode → Settings → Accounts → **+** → Apple ID.
+2. Open `ios/QBTCamera.xcodeproj`, select the **QBTCamera** target → **Signing & Capabilities**, choose your Apple ID as the **Team** and set a unique **Bundle Identifier** (e.g. `com.yourname.qbtcamera`).
 3. Connect the iPhone with a cable, select it at the top of the Xcode window and press **Run** (▶).
-4. On the iPhone: Settings → General → **VPN & Device Management** → your Apple ID → **Trust**.
-   On iOS 18 also turn on Settings → Privacy & Security → **Developer Mode** when asked.
-
-> With a free Apple ID the installation is valid for **7 days**; after that, connect the iPhone and
-> press Run in Xcode again (your settings stay).
+4. On the iPhone: Settings → General → **VPN & Device Management** → your Apple ID → **Trust**. Turn on Developer Mode when asked.
 
 On first launch allow:
 

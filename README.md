@@ -93,8 +93,9 @@ Windows app — Zoom, Microsoft Teams, Google Meet, Discord, OBS, browsers — a
 **Windows installation:** get `QBTCamera-Windows-1.0.zip` (or download from **[Releases](../../releases)**), unzip and run **`Install QBT Camera.cmd`**. You can also run **`QBTCamera.exe`** directly. Details in the **[manual](docs/MANUAL.md)**.
 
 **iPhone installation:**
-- **Ready .ipa:** download **`release/QBTCamera.ipa`** and install with any sideloading tool (**AltStore**, **Sideloadly**, **TrollStore**).
-- **From source:** open `ios/QBTCamera.xcodeproj` in Xcode on a Mac and press Run with a free Apple ID — see [Install on iPhone](docs/MANUAL.md#3-install-on-iphone).
+- **AltStore (Recommended, no Mac needed):** download **`release/QBTCamera.ipa`** and install with **[AltStore](docs/MANUAL.md#option-a-install-via-altstore-windows--mac)** or **[Sideloadly](docs/MANUAL.md#option-b-install-via-sideloadly-windows--mac)**. Free with any Apple ID; AltStore refreshes automatically over home Wi‑Fi.
+- **TrollStore:** download `QBTCamera.ipa` and open in TrollStore (permanent install, iOS 14–17.0).
+- **From source:** open `ios/QBTCamera.xcodeproj` in Xcode on a Mac and press Run with a free Apple ID — see [Install on iPhone](docs/MANUAL.md#option-d-build-from-source-code-with-xcode-mac-only).
 - **App Store:** App Store release coming soon.
 
 ### Requirements

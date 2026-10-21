@@ -62,6 +62,11 @@ Windows app — Zoom, Microsoft Teams, Google Meet, Discord, OBS, browsers — a
 | **Replace background** | **Stream settings & teleprompter** |
 | ![Replace](docs/screenshots/windows-replace.png) | ![Stream](docs/screenshots/windows-stream.png) |
 
+<p align="center">
+  <img src="docs/screenshots/iphone-black-screen.png" width="300" alt="QBT Camera on iPhone — black screen mode keeps streaming while the display is off"><br>
+  <sub>iPhone: black-screen mode — the display is off, the camera keeps streaming.</sub>
+</p>
+
 
 ## Download
 

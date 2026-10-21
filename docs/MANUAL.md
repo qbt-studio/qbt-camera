@@ -31,7 +31,7 @@ Everything stays on your devices: no account, no cloud, no watermark.
 
 | | Requirement |
 |---|---|
-| **iPhone** | iOS 17 or later. Best results: an iPhone with LiDAR (iPhone 12 Pro and later Pro models) for the main camera and Face ID (TrueDepth) for the front camera — they give real depth for background effects. |
+| **iPhone** | Any iPhone that runs **iOS 18 or later** (iPhone XS / XR and newer, iPhone SE 2nd generation and newer) — supported up to iOS 27. Best results: an iPhone with LiDAR (iPhone 12 Pro and later Pro models) for the main camera and Face ID (TrueDepth) for the front camera — they give real depth for background effects. |
 | **Computer** | Windows 11 or Windows 10 (64‑bit) with a DirectX 11 graphics card that decodes H.264 in hardware (practically any GPU from the last 10 years). |
 | **Connection** | The same Wi‑Fi network for both devices, **or** a USB cable. For USB, Apple’s device driver must be installed: install **Apple Devices** from the Microsoft Store (or iTunes). |
 
@@ -47,8 +47,24 @@ To update to a new version, run `Install QBT Camera.cmd` from the new package �
 
 ## 3. Install on iPhone
 
-Open QBT Camera on the iPhone once installed (App Store / TestFlight build, or a developer build
-installed from a Mac). On first launch allow:
+**From the App Store** (when available): search for **QBT Camera** and install.
+
+**Free, from the source code** (until the App Store version is out). You need a Mac with Xcode and a
+free Apple ID:
+
+1. On the Mac, install **Xcode** from the Mac App Store and sign in: Xcode → Settings → Accounts → **+**
+   → Apple ID.
+2. Open `ios/QBTCamera.xcodeproj`, select the **QBTCamera** target → **Signing & Capabilities**, choose
+   your Apple ID as the **Team** and change the **Bundle Identifier** to something unique
+   (for example `com.yourname.qbtcamera`).
+3. Connect the iPhone with a cable, select it at the top of the Xcode window and press **Run** (▶).
+4. On the iPhone: Settings → General → **VPN & Device Management** → your Apple ID → **Trust**.
+   On iOS 18 also turn on Settings → Privacy & Security → **Developer Mode** when asked.
+
+> With a free Apple ID the installation is valid for **7 days**; after that, connect the iPhone and
+> press Run in Xcode again (your settings stay).
+
+On first launch allow:
 
 - **Camera** — to send the picture.
 - **Microphone** — to send sound (optional).

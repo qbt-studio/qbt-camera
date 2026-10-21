@@ -162,7 +162,7 @@ final class VideoEffects {
             // the mask behind a moving hand. Our own edge-aware smoothing handles flicker instead.
             // A hot iPhone gets the lighter mask: iOS would otherwise start throttling the camera.
             let hot = ProcessInfo.processInfo.thermalState.rawValue >= ProcessInfo.ThermalState.serious.rawValue
-            let request = hot ? coolSegmentation : liveSegmentation
+            let request = hot || Self.olderChip ? coolSegmentation : liveSegmentation
             try? VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: .up).perform([request])
             mask = request.results?.first?.pixelBuffer
             let visionTime = (CACurrentMediaTime() - visionStarted) * 1000
@@ -287,6 +287,17 @@ final class VideoEffects {
         CVPixelBufferPoolCreatePixelBuffer(nil, auxPool, &buffer)
         return buffer
     }
+
+    /// A12/A13 iPhones (XS, XR, 11, SE 2nd gen — the oldest that run iOS 18) get the lighter person mask
+    /// so 30 fps holds; the guided filter still restores the fine edge.
+    private static let olderChip: Bool = {
+        var system = utsname()
+        uname(&system)
+        let machine = withUnsafeBytes(of: system.machine) { String(decoding: $0.prefix { $0 != 0 }, as: UTF8.self) }
+        // "iPhone11,8" (XR) … "iPhone12,8" (SE 2): the major number is below 13 (iPhone 12 = "iPhone13,x").
+        guard machine.hasPrefix("iPhone"), let major = Int(machine.dropFirst(6).prefix { $0 != "," }) else { return false }
+        return major < 13
+    }()
 
     /// The centered 16:9 (or 9:16) part of a frame; the frame itself when it already is.
     private static func sixteenByNine(_ extent: CGRect) -> CGRect {

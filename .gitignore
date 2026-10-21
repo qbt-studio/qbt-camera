@@ -4,3 +4,5 @@ xcuserdata/
 *.xcuserstate
 __pycache__/
 windows/build/
+release/
+ios/build-check/

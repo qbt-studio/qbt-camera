@@ -17,6 +17,8 @@ RWTexture2D<float4> gOut0 : register(u0);
 RWTexture2D<float4> gOut1 : register(u1);
 RWTexture2D<float4> gOut2 : register(u2);
 RWTexture2D<float4> gOut3 : register(u3);
+Texture2D<float4> gImage : register(t7);  // the user's own backdrop picture
+Texture3D<float4> gLut : register(t8);    // .cube color grade
 SamplerState gLinear : register(s0);
 
 cbuffer Parameters : register(b0) {
@@ -37,7 +39,17 @@ cbuffer Parameters : register(b0) {
     float gMode;          // 1 portrait, 2 replace, 3 chroma
     float gVertical;      // separable passes: 0 horizontal, 1 vertical
     float gAuxSplit;      // width of one half of the matte stream in UV (0.5)
+    float4 gImageFit;     // backdrop picture: uv scale (xy) and offset (zw), "cover" fit
+    float gLutStrength;   // 0 = no grade
+    float gLutSize;
+    float2 gPadding;
 };
+
+float3 Grade(float3 c) {
+    if (gLutStrength <= 0.0) return c;
+    float3 uvw = (saturate(c) * (gLutSize - 1.0) + 0.5) / gLutSize;
+    return lerp(c, gLut.SampleLevel(gLinear, uvw, 0).rgb, gLutStrength);
+}
 
 static const float3 kLuma = float3(0.2126, 0.7152, 0.0722);
 
@@ -145,6 +157,7 @@ float3 Decontaminated(float3 color, float alpha, float3 background) {
 }
 
 float3 Backdrop(uint2 id) {
+    if (gBackdropKind > 2.5) return gImage.SampleLevel(gLinear, ((id + 0.5) * gInvOutSize) * gImageFit.xy + gImageFit.zw, 0).rgb;
     if (gBackdropKind > 1.5) return gBackdropInner.rgb;
     if (gBackdropKind > 0.5) return lerp(gBackdropInner.rgb, gBackdropOuter.rgb, (id.y + 0.5) * gInvOutSize.y);
     float2 center = float2(gOutSize.x * 0.5, gOutSize.y * 0.38);
@@ -199,6 +212,13 @@ void Composite(uint3 id : SV_DispatchThreadID) {
             result = lerp(result, c3, edge * gWrap);
         }
     }
-    gOut0[id.xy] = float4(result, 1);
+    gOut0[id.xy] = float4(Grade(result), 1);
+}
+
+// No background effect, just the color grade.
+[numthreads(8, 8, 1)]
+void GradeOnly(uint3 id : SV_DispatchThreadID) {
+    if (Outside(id.xy)) return;
+    gOut0[id.xy] = float4(Grade(gFull[id.xy].rgb), 1);
 }
 )HLSL";

@@ -197,16 +197,14 @@ void StreamLoop() {
                     background = app.background;
                     backgroundOnPc = app.backgroundOnPc;
                 }
-                if (backgroundOnPc && background.mode != BackgroundSettings::Mode::Off) {
+                // The phone did the background itself: only the PC's color grade (LUT) may still apply.
+                if (!backgroundOnPc) background.mode = BackgroundSettings::Mode::Off;
+                if (background.mode != BackgroundSettings::Mode::Off || !background.lutPath.empty()) {
                     // The matte for this very frame arrives just before it (same timestamp).
                     const bool auxFresh = latestAux.texture && GetTickCount64() - latestAuxTime < 500;
-                    if (auxFresh && latestAuxPts != header.ptsMicros) qbt::Log("background: matte out of step by %lld us",
-                                                                                 static_cast<long long>(header.ptsMicros - latestAuxPts));
                     const DecodedFrame* aux = auxFresh ? &latestAux : nullptr;
-                    if (aux || background.mode == BackgroundSettings::Mode::Chroma) {
-                        DecodedFrame composited;
-                        if (SUCCEEDED(app.pipeline.Composite(frame, aux, background, composited))) frame = std::move(composited);
-                    }
+                    DecodedFrame composited;
+                    if (app.pipeline.Composite(frame, aux, background, composited) == S_OK) frame = std::move(composited);
                 }
                 app.pipeline.Present(&frame);
                 if (app.cameraOutput.CameraInUse()) {
@@ -606,6 +604,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int showCo
             if (FAILED(g_app->pipeline.AddUnderlay(swapChain))) qbt::Log("ui: could not add the interface layer");
         });
     app.panel.SetBackdropAvailable(mica);
+    app.panel.SetLookSink([](const std::wstring& lut, float strength, const std::wstring& image) {
+        std::lock_guard lock(g_app->backgroundMutex);
+        g_app->background.lutPath = lut;
+        g_app->background.lutStrength = strength;
+        g_app->background.backdropImage = image;
+    });
     LayoutChildren(app.window);
     RefreshAudioDevices(true);
     SetTimer(app.window, kMeterTimer, 50, nullptr);

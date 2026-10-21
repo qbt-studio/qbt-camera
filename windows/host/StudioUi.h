@@ -44,6 +44,8 @@ public:
     using ThemeSink = std::function<void(bool dark)>;
     using SurfaceSink = std::function<void(IUnknown* swapChain)>; // puts the interface into the window
     using AudioDevice = std::pair<std::wstring, std::wstring>;             // id, friendly name
+    /// PC-side look: .cube LUT (empty = none) and strength, backdrop picture (empty = presets).
+    using LookSink = std::function<void(const std::wstring& lut, float strength, const std::wstring& image)>;
 
     bool Create(HWND parent, HINSTANCE instance, const std::wstring& settingsFolder, CommandSink commands,
                 DeviceSink audioDevice, ThemeSink theme, SurfaceSink surface);
@@ -64,6 +66,8 @@ public:
     void SetStatus(const HostStatus& status);
     void SetAudioDevices(const std::vector<AudioDevice>& devices, const std::wstring& selectedId);
     void SetAudioLevel(float peak);
+    /// Called now and whenever the LUT or the backdrop picture changes.
+    void SetLookSink(LookSink sink);
 
 private:
     enum class Group { Lens, Exposure, Bias, WhiteBalance, Focus, Zoom, Torch, Effects, Audio, Stream, Prompter, Screen, Count };
@@ -154,6 +158,11 @@ private:
     void SendEffects();
     void SendPreset();
     void SendPrompter();
+    void LoadLook();
+    void SaveLook();
+    void NotifyLook();
+    std::wstring PickFile(const wchar_t* title, const wchar_t* filterName, const wchar_t* filterPattern);
+    bool EditText(std::wstring& text);
     void Queue(Group group, std::string json);
     void Flush();
     bool RecentlyTouched(Group group) const;
@@ -229,6 +238,11 @@ private:
     double blur_ = 0.6, retouch_ = 0, filterAmount_ = 1;
     std::string background_ = "off", backdropName_ = "studio";
     std::string processing_ = "pc"; // where background effects run: "pc" (this GPU) or "phone"
+    // PC-only look (files on this computer), saved in look.txt.
+    std::wstring lutPath_, imagePath_, prompterText_;
+    double lutStrength_ = 1.0;
+    bool useImage_ = false;
+    LookSink lookSink_;
     double keySensitivity_ = 0.5, keySoftness_ = 0.4, keySpill_ = 0.7;
     std::string depthSensor_; // "lidar", "truedepth" or empty
     bool depthActive_ = false;

@@ -1,6 +1,9 @@
 #include "BackgroundCompositor.h"
 
 #include <d3dcompiler.h>
+#include <wincodec.h>
+
+#include <cstdio>
 
 #include <algorithm>
 #include <cmath>
@@ -9,6 +12,7 @@
 #include "BackgroundShaders.h"
 
 #pragma comment(lib, "d3dcompiler")
+#pragma comment(lib, "windowscodecs")
 
 namespace {
 
@@ -53,6 +57,7 @@ HRESULT BackgroundCompositor::Initialize(ID3D11Device* device, ID3D11DeviceConte
     RETURN_IF_FAILED(compile("Apply", apply_));
     RETURN_IF_FAILED(compile("BackgroundOnly", backgroundOnlyShader_));
     RETURN_IF_FAILED(compile("Composite", composite_));
+    RETURN_IF_FAILED(compile("GradeOnly", gradeOnly_));
 
     D3D11_BUFFER_DESC buffer{};
     buffer.ByteWidth = (sizeof(Parameters) + 15) & ~15u;
@@ -131,13 +136,13 @@ void BackgroundCompositor::Run(ID3D11ComputeShader* shader, const Target& size, 
     context_->CSSetShader(shader, nullptr, 0);
     context_->CSSetConstantBuffers(0, 1, constants_.GetAddressOf());
     context_->CSSetSamplers(0, 1, linear_.GetAddressOf());
-    context_->CSSetShaderResources(0, 7, binding.inputs);
+    context_->CSSetShaderResources(0, 9, binding.inputs);
     context_->CSSetUnorderedAccessViews(0, 4, binding.outputs, nullptr);
     context_->Dispatch(Groups(size.width), Groups(size.height), 1);
     // Unbind so the next pass can read what this one wrote.
-    ID3D11ShaderResourceView* noInputs[7] = {};
+    ID3D11ShaderResourceView* noInputs[9] = {};
     ID3D11UnorderedAccessView* noOutputs[4] = {};
-    context_->CSSetShaderResources(0, 7, noInputs);
+    context_->CSSetShaderResources(0, 9, noInputs);
     context_->CSSetUnorderedAccessViews(0, 4, noOutputs, nullptr);
 }
 
@@ -208,13 +213,118 @@ void BackgroundCompositor::SampleKeyColor() {
     qbt::Log("background: key color %.2f %.2f %.2f", key_[0], key_[1], key_[2]);
 }
 
+void BackgroundCompositor::LoadLut(const std::wstring& path) {
+    lutPath_ = path;
+    lut_.Reset();
+    lutSize_ = 0;
+    if (path.empty()) return;
+    // .cube: "LUT_3D_SIZE N", then N³ lines "r g b" with red changing fastest.
+    FILE* file = nullptr;
+    if (_wfopen_s(&file, path.c_str(), L"r") != 0 || !file) {
+        qbt::Log("background: can't open LUT");
+        return;
+    }
+    int size = 0;
+    float minimum[3] = {0, 0, 0}, maximum[3] = {1, 1, 1};
+    std::vector<float> values;
+    char line[512];
+    while (fgets(line, sizeof(line), file)) {
+        if (line[0] == '#' || line[0] == '\n' || line[0] == '\r') continue;
+        float r, g, b;
+        if (sscanf_s(line, "LUT_3D_SIZE %d", &size) == 1) {
+            values.reserve(size_t(size) * size * size * 4);
+            continue;
+        }
+        if (sscanf_s(line, "DOMAIN_MIN %f %f %f", &minimum[0], &minimum[1], &minimum[2]) == 3) continue;
+        if (sscanf_s(line, "DOMAIN_MAX %f %f %f", &maximum[0], &maximum[1], &maximum[2]) == 3) continue;
+        if (size > 0 && sscanf_s(line, "%f %f %f", &r, &g, &b) == 3) {
+            const float rgb[3] = {r, g, b};
+            for (int i = 0; i < 3; ++i) values.push_back((rgb[i] - minimum[i]) / std::max(1e-6f, maximum[i] - minimum[i]));
+            values.push_back(1.0f);
+        }
+    }
+    fclose(file);
+    if (size < 2 || size > 256 || values.size() != size_t(size) * size * size * 4) {
+        qbt::Log("background: not a 3D .cube LUT (size %d, %zu values)", size, values.size() / 4);
+        return;
+    }
+    D3D11_TEXTURE3D_DESC desc{};
+    desc.Width = desc.Height = desc.Depth = static_cast<UINT>(size);
+    desc.MipLevels = 1;
+    desc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
+    desc.Usage = D3D11_USAGE_IMMUTABLE;
+    desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    D3D11_SUBRESOURCE_DATA data{values.data(), UINT(size * 16), UINT(size * size * 16)};
+    ComPtr<ID3D11Texture3D> texture;
+    if (FAILED(device_->CreateTexture3D(&desc, &data, &texture)) ||
+        FAILED(device_->CreateShaderResourceView(texture.Get(), nullptr, &lut_))) {
+        qbt::Log("background: LUT texture failed");
+        return;
+    }
+    lutSize_ = static_cast<float>(size);
+    qbt::Log("background: LUT %d³ loaded", size);
+}
+
+void BackgroundCompositor::LoadImage(const std::wstring& path) {
+    imagePath_ = path;
+    image_.Reset();
+    if (path.empty()) return;
+    // Any picture Windows can open (JPEG, PNG, HEIC with the extension…), via WIC, at most 4K.
+    ComPtr<IWICImagingFactory> factory;
+    ComPtr<IWICBitmapDecoder> decoder;
+    ComPtr<IWICBitmapFrameDecode> source;
+    ComPtr<IWICFormatConverter> converter;
+    ComPtr<IWICBitmapScaler> scaler;
+    UINT width = 0, height = 0;
+    if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&factory))) ||
+        FAILED(factory->CreateDecoderFromFilename(path.c_str(), nullptr, GENERIC_READ, WICDecodeMetadataCacheOnDemand, &decoder)) ||
+        FAILED(decoder->GetFrame(0, &source)) || FAILED(source->GetSize(&width, &height)) || !width || !height) {
+        qbt::Log("background: can't read the backdrop picture");
+        return;
+    }
+    IWICBitmapSource* input = source.Get();
+    const double shrink = std::min(1.0, 3840.0 / std::max(width, height));
+    if (shrink < 1.0 && SUCCEEDED(factory->CreateBitmapScaler(&scaler))) {
+        width = std::max(1u, UINT(width * shrink));
+        height = std::max(1u, UINT(height * shrink));
+        if (SUCCEEDED(scaler->Initialize(source.Get(), width, height, WICBitmapInterpolationModeHighQualityCubic))) input = scaler.Get();
+    }
+    if (FAILED(factory->CreateFormatConverter(&converter)) ||
+        FAILED(converter->Initialize(input, GUID_WICPixelFormat32bppRGBA, WICBitmapDitherTypeNone, nullptr, 0,
+                                     WICBitmapPaletteTypeCustom)))
+        return;
+    std::vector<uint8_t> pixels(size_t(width) * height * 4);
+    if (FAILED(converter->CopyPixels(nullptr, width * 4, static_cast<UINT>(pixels.size()), pixels.data()))) return;
+    D3D11_TEXTURE2D_DESC desc{};
+    desc.Width = width;
+    desc.Height = height;
+    desc.MipLevels = 1;
+    desc.ArraySize = 1;
+    desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    desc.SampleDesc.Count = 1;
+    desc.Usage = D3D11_USAGE_IMMUTABLE;
+    desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    D3D11_SUBRESOURCE_DATA data{pixels.data(), width * 4, 0};
+    ComPtr<ID3D11Texture2D> texture;
+    if (FAILED(device_->CreateTexture2D(&desc, &data, &texture)) ||
+        FAILED(device_->CreateShaderResourceView(texture.Get(), nullptr, &image_)))
+        return;
+    imageWidth_ = width;
+    imageHeight_ = height;
+    qbt::Log("background: backdrop picture %ux%u loaded", width, height);
+}
+
 HRESULT BackgroundCompositor::Process(const DecodedFrame& frame, const DecodedFrame* aux, const BackgroundSettings& settings,
                                       DecodedFrame& out) {
     if (!prepare_) return E_UNEXPECTED;
     const UINT width = static_cast<UINT>(frame.visible.right - frame.visible.left) & ~3u;
     const UINT height = static_cast<UINT>(frame.visible.bottom - frame.visible.top) & ~3u;
+    if (settings.lutPath != lutPath_) LoadLut(settings.lutPath);
+    if (settings.backdropImage != imagePath_) LoadImage(settings.backdropImage);
     const bool chroma = settings.mode == BackgroundSettings::Mode::Chroma;
-    if (!chroma && !aux) return E_INVALIDARG;
+    const bool background = settings.mode != BackgroundSettings::Mode::Off && (chroma || aux);
+    const bool grade = lut_ && settings.lutStrength > 0.01f;
+    if (!background && !grade) return S_FALSE; // nothing to do: show the frame as it is
     const UINT auxWidth = aux ? static_cast<UINT>(aux->visible.right - aux->visible.left) : 0;
     const UINT auxHeight = aux ? static_cast<UINT>(aux->visible.bottom - aux->visible.top) : 0;
     RETURN_IF_FAILED(EnsureTargets(width, height, auxWidth, auxHeight));
@@ -223,8 +333,29 @@ HRESULT BackgroundCompositor::Process(const DecodedFrame& frame, const DecodedFr
     Parameters parameters{};
     parameters.auxSplit = 0.5f;
     FillBackdrop(parameters, settings.backdrop);
+    if (image_ && !settings.backdropImage.empty()) {
+        // Cover the frame with the picture, cropping whatever sticks out, centered.
+        const float frameAspect = float(width) / height, imageAspect = float(imageWidth_) / imageHeight_;
+        const float scaleX = frameAspect < imageAspect ? frameAspect / imageAspect : 1.0f;
+        const float scaleY = frameAspect < imageAspect ? 1.0f : imageAspect / frameAspect;
+        parameters.imageFit[0] = scaleX;
+        parameters.imageFit[1] = scaleY;
+        parameters.imageFit[2] = (1 - scaleX) / 2;
+        parameters.imageFit[3] = (1 - scaleY) / 2;
+        parameters.backdropKind = 3;
+    }
+    if (grade) {
+        parameters.lutStrength = std::clamp(settings.lutStrength, 0.0f, 1.0f);
+        parameters.lutSize = lutSize_;
+    }
 
-    if (chroma) {
+    if (!background) {
+        Binding binding;
+        binding.inputs[0] = full_.srv.Get();
+        binding.inputs[8] = lut_.Get();
+        binding.outputs[0] = output_.uav.Get();
+        Run(gradeOnly_.Get(), output_, binding, parameters);
+    } else if (chroma) {
         if (keyGeneration_ != settings.keyGeneration) {
             keyGeneration_ = settings.keyGeneration;
             SampleKeyColor();
@@ -237,6 +368,8 @@ HRESULT BackgroundCompositor::Process(const DecodedFrame& frame, const DecodedFr
         parameters.wrap = 0.3f;
         Binding binding;
         binding.inputs[0] = full_.srv.Get();
+        binding.inputs[7] = image_.Get();
+        binding.inputs[8] = lut_.Get();
         binding.outputs[0] = output_.uav.Get();
         Run(composite_.Get(), output_, binding, parameters);
     } else {
@@ -293,6 +426,8 @@ HRESULT BackgroundCompositor::Process(const DecodedFrame& frame, const DecodedFr
         composite.inputs[0] = full_.srv.Get();
         for (int i = 0; i < 3; ++i) composite.inputs[3 + i] = levels_[i].srv.Get();
         composite.inputs[6] = matte.srv.Get();
+        composite.inputs[7] = image_.Get();
+        composite.inputs[8] = lut_.Get();
         composite.outputs[0] = output_.uav.Get();
         parameters.mode = replace ? 2.0f : 1.0f;
         parameters.wrap = replace ? 0.12f : 0.25f;

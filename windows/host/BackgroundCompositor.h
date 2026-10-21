@@ -2,6 +2,7 @@
 #include <d3d11.h>
 
 #include <functional>
+#include <string>
 
 #include "Common.h"
 
@@ -13,6 +14,10 @@ struct BackgroundSettings {
     int backdrop = 0;           // studio, glow, warm, white, black, green
     float keySensitivity = 0.5f, keySoftness = 0.4f, keySpill = 0.7f;
     unsigned keyGeneration = 0; // bumped when the user asks to sample the screen color again
+    // Set on the PC only (files live here):
+    std::wstring backdropImage; // the user's own picture behind them (replace / chroma), empty = presets
+    std::wstring lutPath;       // .cube color grade for the whole picture, empty = none
+    float lutStrength = 1.0f;
 };
 
 // Background effects on the PC's GPU: the phone sends the untouched picture plus a small matte stream
@@ -26,7 +31,8 @@ public:
 
     HRESULT Initialize(ID3D11Device* device, ID3D11DeviceContext* context, Converter convert);
 
-    /// `aux` may be null for chroma key (it needs no matte). On success `out` is an RGB frame.
+    /// `aux` may be null for chroma key (it needs no matte) or when only the LUT applies.
+    /// On success `out` is an RGB frame.
     HRESULT Process(const DecodedFrame& frame, const DecodedFrame* aux, const BackgroundSettings& settings, DecodedFrame& out);
 
 private:
@@ -43,9 +49,11 @@ private:
         float threshold, softness, spill, wrap;
         float backdropInner[4], backdropOuter[4];
         float backdropKind, mode, vertical, auxSplit;
+        float imageFit[4];
+        float lutStrength, lutSize, padding[2];
     };
     struct Binding {
-        ID3D11ShaderResourceView* inputs[7] = {};   // t0…t6
+        ID3D11ShaderResourceView* inputs[9] = {};   // t0…t8
         ID3D11UnorderedAccessView* outputs[4] = {}; // u0…u3
     };
 
@@ -55,13 +63,20 @@ private:
     void Separable(ID3D11ComputeShader* shader, const Target& input, Target& scratch, Target& output, Parameters parameters);
     void SampleKeyColor();
     void FillBackdrop(Parameters& parameters, int backdrop) const;
+    void LoadLut(const std::wstring& path);
+    void LoadImage(const std::wstring& path);
 
     ComPtr<ID3D11Device> device_;
     ComPtr<ID3D11DeviceContext> context_;
     Converter convert_;
     ComPtr<ID3D11Buffer> constants_;
     ComPtr<ID3D11SamplerState> linear_;
-    ComPtr<ID3D11ComputeShader> prepare_, box_, gaussian_, coefficients_, apply_, backgroundOnlyShader_, composite_;
+    ComPtr<ID3D11ComputeShader> prepare_, box_, gaussian_, coefficients_, apply_, backgroundOnlyShader_, composite_, gradeOnly_;
+    // Look: .cube LUT and the backdrop picture, reloaded when the paths change.
+    std::wstring lutPath_, imagePath_;
+    ComPtr<ID3D11ShaderResourceView> lut_, image_;
+    float lutSize_ = 0;
+    UINT imageWidth_ = 0, imageHeight_ = 0;
 
     UINT width_ = 0, height_ = 0, auxWidth_ = 0, auxHeight_ = 0;
     Target full_, aux_, output_;

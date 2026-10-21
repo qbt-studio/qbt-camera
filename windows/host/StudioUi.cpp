@@ -1,7 +1,8 @@
-﻿#include "StudioUi.h"
+#include "StudioUi.h"
 
 #include <d2d1_1helper.h>
 #include <d2d1effects.h>
+#include <shobjidl.h>
 #include <windowsx.h>
 
 #include <algorithm>
@@ -69,6 +70,7 @@ enum : int {
     kBackdropBase = 170,
     kKeySensitivity = 180, kKeySoftness, kKeySpill, kKeyResample,
     kProcessingBase = 190,
+    kBackdropImage = 200, kLutLoad, kLutStrength, kLutRemove, kPrompterEdit,
     // Animation slots that aren't widgets.
     kTabIndicatorX = 5000, kLensIndicatorX, kLensIndicatorWidth, kScroll, kThemeBlend,
 };
@@ -289,6 +291,7 @@ bool StudioUi::Create(HWND parent, HINSTANCE instance, const std::wstring& setti
     format(wrapFormat_, L"Segoe UI Variable Text", 12.5f, DWRITE_FONT_WEIGHT_NORMAL, true);
 
     ApplyTheme(false);
+    LoadLook();
     return CreateDevice();
 }
 
@@ -888,7 +891,7 @@ float StudioUi::EffectsTab(float x, float y, float width) {
         // Background: mode, then what that mode needs.
         const bool portrait = background_ == "portrait", replace = background_ == "replace", chroma = background_ == "chroma";
         const float chips = 14 + kChipHeight + 14;
-        const float backdrops = kChipHeight * 2 + 8 + 14;
+        const float backdrops = kChipHeight * 3 + 16 + 14;
         float height = chips;
         if (background_ != "off") height += kChipHeight + 14 + 14;
         if (portrait) height += kSliderRow + 26;
@@ -944,12 +947,30 @@ float StudioUi::EffectsTab(float x, float y, float width) {
                 const float cx = ix + (i % 3) * (thirdWidth + 8);
                 const float cy = top + (i / 3) * (kChipHeight + 8);
                 if (Chip(kBackdropBase + i, {cx, cy, cx + thirdWidth, cy + kChipHeight}, kBackdropTitles[i],
-                         backdropName_ == kBackdropNames[i], connected_)) {
+                         !(useImage_ && processing_ == "pc") && backdropName_ == kBackdropNames[i], connected_)) {
                     backdropName_ = kBackdropNames[i];
+                    useImage_ = false;
+                    SaveLook();
+                    NotifyLook();
                     SendEffects();
                 }
             }
-            row = top + kChipHeight * 2 + 8 + 14;
+            // Your own picture: composited here, so only when the PC does the work.
+            const float imageTop = top + (kChipHeight + 8) * 2;
+            const bool imageAvailable = processing_ == "pc";
+            std::wstring imageTitle = L"Your picture…";
+            if (!imageAvailable) imageTitle = L"Your picture (needs \u201CComputed on PC\u201D)";
+            else if (useImage_ && !imagePath_.empty())
+                imageTitle = L"Picture: " + imagePath_.substr(imagePath_.find_last_of(L"\\/") + 1);
+            if (Chip(kBackdropImage, {ix, imageTop, ix + iw, imageTop + kChipHeight}, imageTitle,
+                     imageAvailable && useImage_ && !imagePath_.empty(), connected_ && imageAvailable)) {
+                const std::wstring picked = PickFile(L"Background picture", L"Pictures", L"*.jpg;*.jpeg;*.png;*.bmp;*.heic;*.webp");
+                if (!picked.empty()) imagePath_ = picked;
+                if (!imagePath_.empty()) useImage_ = true;
+                SaveLook();
+                NotifyLook();
+            }
+            row = top + kChipHeight * 3 + 16 + 14;
         }
         if (chroma) {
             Separator(ix, row, iw + kRowPad);
@@ -997,6 +1018,37 @@ float StudioUi::EffectsTab(float x, float y, float width) {
                   connected_ && filter_ != "none", changed);
         if (changed) SendEffects();
         y = group.bottom + kGroupGap;
+    }
+    {
+        // .cube color grade, applied by this PC's GPU to the whole picture.
+        const bool hasLut = !lutPath_.empty();
+        const Rect lutGroup = Platter(x, y, width, 14 + kChipHeight + 14 + (hasLut ? kSliderRow + kChipHeight + 14 : 0),
+                                      L"Color grading (LUT)");
+        float lutRow = lutGroup.top + 14;
+        const std::wstring lutTitle = hasLut ? L"LUT: " + lutPath_.substr(lutPath_.find_last_of(L"\\/") + 1) : L"Load a .cube LUT…";
+        if (Chip(kLutLoad, {ix, lutRow, ix + iw, lutRow + kChipHeight}, lutTitle, hasLut, true)) {
+            const std::wstring picked = PickFile(L"Color grading LUT", L"Cube LUT", L"*.cube");
+            if (!picked.empty()) {
+                lutPath_ = picked;
+                SaveLook();
+                NotifyLook();
+            }
+        }
+        lutRow += kChipHeight + 14;
+        if (hasLut) {
+            lutRow = SliderRow(kLutStrength, ix, lutRow, iw, L"LUT strength", WideFormat(L"%.0f %%", lutStrength_ * 100), lutStrength_,
+                               true, changed);
+            if (changed) {
+                SaveLook();
+                NotifyLook();
+            }
+            if (Chip(kLutRemove, {ix, lutRow, ix + iw, lutRow + kChipHeight}, L"Remove LUT", false, true)) {
+                lutPath_.clear();
+                SaveLook();
+                NotifyLook();
+            }
+        }
+        y = lutGroup.bottom + kGroupGap;
     }
     {
         const Rect group = Platter(x, y, width, kSwitchRow, L"Frame");
@@ -1138,7 +1190,7 @@ float StudioUi::StreamTab(float x, float y, float width) {
         y = group.bottom + kGroupGap;
     }
     {
-        const Rect group = Platter(x, y, width, kSwitchRow * 2 + kSliderRow, L"Teleprompter by the lens");
+        const Rect group = Platter(x, y, width, kSwitchRow * 2 + kSliderRow + kChipHeight + 14, L"Teleprompter by the lens");
         float row = SwitchRow(kPrompterVisible, x, group.top, width, L"Show on iPhone", prompterVisible_, connected_, toggled);
         if (toggled) SendPrompter();
         Separator(ix, row, iw + kRowPad);
@@ -1150,6 +1202,28 @@ float StudioUi::StreamTab(float x, float y, float width) {
         if (changed) {
             prompterSpeed_ = std::round(prompterSpeed_ * 4) / 4;
             SendPrompter();
+        }
+        const float editTop = group.bottom - kChipHeight - 12;
+        if (Chip(kPrompterEdit, {ix, editTop, ix + iw, editTop + kChipHeight}, L"Edit text…", false, connected_)) {
+            std::wstring text = prompterText_;
+            if (EditText(text)) {
+                prompterText_ = text;
+                SaveLook();
+                // UTF-16 → UTF-8 → JSON string.
+                const int length = WideCharToMultiByte(CP_UTF8, 0, text.c_str(), static_cast<int>(text.size()), nullptr, 0, nullptr, nullptr);
+                std::string utf8(static_cast<size_t>(length), '\0');
+                WideCharToMultiByte(CP_UTF8, 0, text.c_str(), static_cast<int>(text.size()), utf8.data(), length, nullptr, nullptr);
+                std::string escaped;
+                for (const char c : utf8) {
+                    if (c == '"' || c == '\\') escaped += '\\', escaped += c;
+                    else if (c == '\n') escaped += "\\n";
+                    else if (c == '\r') continue;
+                    else if (c == '\t') escaped += "\\t";
+                    else escaped += c;
+                }
+                if (sink_) sink_(R"({"cmd":"prompter","text":")" + escaped + R"(","visible":true})");
+                prompterVisible_ = true;
+            }
         }
         y = group.bottom + kGroupGap;
     }
@@ -1649,6 +1723,171 @@ void StudioUi::Flush() {
     for (const auto& [group, json] : pending_) sink_(json);
     pending_.clear();
     lastSend_ = GetTickCount64();
+}
+
+void StudioUi::SetLookSink(LookSink sink) {
+    lookSink_ = std::move(sink);
+    NotifyLook();
+}
+
+void StudioUi::NotifyLook() {
+    if (lookSink_) lookSink_(lutPath_, static_cast<float>(lutStrength_), useImage_ ? imagePath_ : std::wstring());
+}
+
+// look.txt (UTF-8): one "key=value" per line.
+void StudioUi::LoadLook() {
+    FILE* file = nullptr;
+    if (_wfopen_s(&file, (settingsFolder_ + L"\\look.txt").c_str(), L"r, ccs=UTF-8") != 0 || !file) return;
+    wchar_t line[4096];
+    while (fgetws(line, 4096, file)) {
+        std::wstring entry = line;
+        while (!entry.empty() && (entry.back() == L'\n' || entry.back() == L'\r')) entry.pop_back();
+        const size_t equals = entry.find(L'=');
+        if (equals == std::wstring::npos) continue;
+        const std::wstring key = entry.substr(0, equals), value = entry.substr(equals + 1);
+        if (key == L"lut") lutPath_ = value;
+        else if (key == L"lutStrength") lutStrength_ = std::clamp(_wtof(value.c_str()), 0.0, 1.0);
+        else if (key == L"image") imagePath_ = value;
+        else if (key == L"useImage") useImage_ = value == L"1";
+        else if (key == L"prompter") {
+            prompterText_.clear();
+            for (size_t i = 0; i < value.size(); ++i) { // stored with \n for line breaks
+                if (value[i] == L'\\' && i + 1 < value.size() && value[i + 1] == L'n') {
+                    prompterText_ += L'\n';
+                    ++i;
+                } else {
+                    prompterText_ += value[i];
+                }
+            }
+        }
+    }
+    fclose(file);
+}
+
+void StudioUi::SaveLook() {
+    FILE* file = nullptr;
+    if (_wfopen_s(&file, (settingsFolder_ + L"\\look.txt").c_str(), L"w, ccs=UTF-8") != 0 || !file) return;
+    std::wstring prompter;
+    for (const wchar_t c : prompterText_) {
+        if (c == L'\n') prompter += L"\\n";
+        else if (c != L'\r') prompter += c;
+    }
+    fwprintf(file, L"lut=%s\nlutStrength=%.2f\nimage=%s\nuseImage=%d\nprompter=%s\n", lutPath_.c_str(), lutStrength_,
+             imagePath_.c_str(), useImage_ ? 1 : 0, prompter.c_str());
+    fclose(file);
+}
+
+std::wstring StudioUi::PickFile(const wchar_t* title, const wchar_t* filterName, const wchar_t* filterPattern) {
+    ComPtr<IFileOpenDialog> dialog;
+    if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dialog)))) return {};
+    const COMDLG_FILTERSPEC filter{filterName, filterPattern};
+    dialog->SetFileTypes(1, &filter);
+    dialog->SetTitle(title);
+    if (FAILED(dialog->Show(parent_))) return {};
+    ComPtr<IShellItem> item;
+    PWSTR path = nullptr;
+    if (FAILED(dialog->GetResult(&item)) || FAILED(item->GetDisplayName(SIGDN_FILESYSPATH, &path))) return {};
+    std::wstring result = path;
+    CoTaskMemFree(path);
+    // The pointer went to the dialog: forget the press so nothing else reacts to it.
+    mouseDown_ = false;
+    active_ = 0;
+    return result;
+}
+
+// A small modal editor for the teleprompter text (standard Windows controls).
+bool StudioUi::EditText(std::wstring& text) {
+    struct State {
+        HWND edit = nullptr;
+        bool accepted = false;
+        bool done = false;
+        std::wstring* text = nullptr;
+    } state{nullptr, false, false, &text};
+    static constexpr wchar_t kClass[] = L"QBTPrompterEditor";
+    static bool registered = false;
+    if (!registered) {
+        WNDCLASSEXW windowClass{sizeof(windowClass)};
+        windowClass.lpfnWndProc = [](HWND window, UINT message, WPARAM wParam, LPARAM lParam) -> LRESULT {
+            auto* state = reinterpret_cast<State*>(GetWindowLongPtrW(window, GWLP_USERDATA));
+            switch (message) {
+            case WM_COMMAND:
+                if (state && (LOWORD(wParam) == IDOK || LOWORD(wParam) == IDCANCEL)) {
+                    if (LOWORD(wParam) == IDOK) {
+                        const int length = GetWindowTextLengthW(state->edit);
+                        std::wstring value(static_cast<size_t>(length) + 1, L'\0');
+                        GetWindowTextW(state->edit, value.data(), length + 1);
+                        value.resize(static_cast<size_t>(length));
+                        *state->text = value;
+                        state->accepted = true;
+                    }
+                    state->done = true;
+                    return 0;
+                }
+                break;
+            case WM_CLOSE:
+                if (state) state->done = true;
+                return 0;
+            default:
+                break;
+            }
+            return DefWindowProcW(window, message, wParam, lParam);
+        };
+        windowClass.hInstance = GetModuleHandleW(nullptr);
+        windowClass.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+        windowClass.hbrBackground = GetSysColorBrush(COLOR_WINDOW);
+        windowClass.lpszClassName = kClass;
+        RegisterClassExW(&windowClass);
+        registered = true;
+    }
+    const int scale = static_cast<int>(dpi_);
+    const auto px = [scale](int dips) { return MulDiv(dips, scale, 96); };
+    RECT owner{};
+    GetWindowRect(parent_, &owner);
+    const int width = px(560), height = px(420);
+    HWND window = CreateWindowExW(WS_EX_DLGMODALFRAME, kClass, L"Teleprompter text", WS_POPUP | WS_CAPTION | WS_SYSMENU,
+                                  (owner.left + owner.right - width) / 2, (owner.top + owner.bottom - height) / 2, width, height,
+                                  parent_, nullptr, GetModuleHandleW(nullptr), nullptr);
+    if (!window) return false;
+    SetWindowLongPtrW(window, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(&state));
+    HFONT font = CreateFontW(-px(15), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                             CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+    RECT client{};
+    GetClientRect(window, &client);
+    std::wstring shown; // the edit control wants CR LF
+    for (const wchar_t c : text) {
+        if (c == L'\n') shown += L"\r\n";
+        else shown += c;
+    }
+    state.edit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", shown.c_str(),
+                                 WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_TABSTOP | ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN,
+                                 px(12), px(12), client.right - px(24), client.bottom - px(68), window, nullptr, nullptr, nullptr);
+    HWND ok = CreateWindowExW(0, L"BUTTON", L"Send to iPhone", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
+                              client.right - px(252), client.bottom - px(44), px(140), px(32), window,
+                              reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDOK)), nullptr, nullptr);
+    HWND cancel = CreateWindowExW(0, L"BUTTON", L"Cancel", WS_CHILD | WS_VISIBLE | WS_TABSTOP, client.right - px(104),
+                                  client.bottom - px(44), px(92), px(32), window,
+                                  reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDCANCEL)), nullptr, nullptr);
+    for (HWND control : {state.edit, ok, cancel}) SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+    EnableWindow(parent_, FALSE);
+    ShowWindow(window, SW_SHOW);
+    SetFocus(state.edit);
+    MSG message;
+    while (!state.done && GetMessageW(&message, nullptr, 0, 0) > 0) {
+        if (!IsDialogMessageW(window, &message)) {
+            TranslateMessage(&message);
+            DispatchMessageW(&message);
+        }
+    }
+    for (size_t i = 0; i < text.size(); ++i) { // back to plain \n
+        if (text[i] == L'\r') text.erase(i--, 1);
+    }
+    EnableWindow(parent_, TRUE);
+    DestroyWindow(window);
+    DeleteObject(font);
+    SetForegroundWindow(parent_);
+    mouseDown_ = false;
+    active_ = 0;
+    return state.accepted;
 }
 
 bool StudioUi::RecentlyTouched(Group group) const {

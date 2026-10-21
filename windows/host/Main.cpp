@@ -6,6 +6,7 @@
 #include <dwmapi.h>
 #include <mfapi.h>
 #include <shlobj.h>
+#include <windowsx.h>
 
 #include <algorithm>
 #include <atomic>
@@ -213,8 +214,8 @@ void LayoutChildren(HWND window) {
     RECT client;
     GetClientRect(window, &client);
     MoveWindow(g_app->panel.Handle(), 0, 0, client.right, client.bottom, TRUE);
-    // The preview card has 20 DIP corners; the video sits 1 DIP inside its rim.
-    const float radius = 19.0f * static_cast<float>(GetDpiForWindow(window)) / 96.0f;
+    // The preview card has 22 DIP corners; the video sits 1 DIP inside its rim.
+    const float radius = 21.0f * static_cast<float>(GetDpiForWindow(window)) / 96.0f;
     g_app->pipeline.SetPreviewRect(g_app->panel.PreviewRect(), radius);
     g_app->pipeline.RefreshIdle();
 }
@@ -330,7 +331,39 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         g_app->tray.Restore();
         return 0;
     }
+    // The system minimize/maximize/close buttons live inside our client area (custom frame).
+    LRESULT dwmResult = 0;
+    if (DwmDefWindowProc(window, message, wParam, lParam, &dwmResult)) return dwmResult;
     switch (message) {
+    case WM_NCCALCSIZE:
+        if (wParam) {
+            // Keep the side and bottom resize borders, drop the title bar: the header takes its place.
+            auto* params = reinterpret_cast<NCCALCSIZE_PARAMS*>(lParam);
+            const LONG top = params->rgrc[0].top;
+            DefWindowProcW(window, message, wParam, lParam);
+            params->rgrc[0].top = top;
+            if (IsZoomed(window)) {
+                const UINT dpi = GetDpiForWindow(window);
+                params->rgrc[0].top += GetSystemMetricsForDpi(SM_CYFRAME, dpi) + GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi);
+            }
+            return 0;
+        }
+        break;
+    case WM_NCHITTEST: {
+        const LRESULT hit = DefWindowProcW(window, message, wParam, lParam);
+        if (hit != HTCLIENT || !g_app) return hit;
+        POINT point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+        ScreenToClient(window, &point);
+        const UINT dpi = GetDpiForWindow(window);
+        const int border = GetSystemMetricsForDpi(SM_CYFRAME, dpi) + GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi);
+        if (!IsZoomed(window) && point.y < border) return HTTOP;
+        if (point.y < g_app->panel.HeaderHeight()) return HTCAPTION;
+        return HTCLIENT;
+    }
+    case WM_SETTINGCHANGE:
+        if (lParam && wcscmp(reinterpret_cast<const wchar_t*>(lParam), L"ImmersiveColorSet") == 0)
+            g_app->panel.OnSystemThemeChanged();
+        break;
     case kTrayMessage:
         if (lParam == WM_LBUTTONUP || lParam == WM_LBUTTONDBLCLK) ShowMainWindow();
         if (lParam == WM_RBUTTONUP || lParam == WM_CONTEXTMENU) ShowTrayMenu(window);
@@ -407,8 +440,9 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         PostQuitMessage(0);
         return 0;
     default:
-        return DefWindowProcW(window, message, wParam, lParam);
+        break;
     }
+    return DefWindowProcW(window, message, wParam, lParam);
 }
 
 /// %LOCALAPPDATA%\QBTCamera: log and settings.
@@ -475,22 +509,24 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int showCo
     const UINT dpi = GetDpiForSystem();
     RECT frame{0, 0, MulDiv(1360, dpi, 96), MulDiv(820, dpi, 96)};
     AdjustWindowRectExForDpi(&frame, WS_OVERLAPPEDWINDOW, FALSE, 0, dpi);
-    app.window = CreateWindowExW(0, kWindowClass, L"QBT Camera", WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, CW_USEDEFAULT,
-                                 CW_USEDEFAULT, frame.right - frame.left, frame.bottom - frame.top, nullptr, nullptr,
-                                 instance, nullptr);
-    // Title bar in the app's own colors, rounded Windows 11 corners.
-    const BOOL darkTitleBar = TRUE;
-    DwmSetWindowAttribute(app.window, DWMWA_USE_IMMERSIVE_DARK_MODE, &darkTitleBar, sizeof(darkTitleBar));
-    const COLORREF captionColor = RGB(5, 6, 11);
-    DwmSetWindowAttribute(app.window, DWMWA_CAPTION_COLOR, &captionColor, sizeof(captionColor));
+    // No redirection bitmap: everything inside is DirectComposition, so the Mica material shows through.
+    app.window = CreateWindowExW(WS_EX_NOREDIRECTIONBITMAP, kWindowClass, L"QBT Camera", WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
+                                 CW_USEDEFAULT, CW_USEDEFAULT, frame.right - frame.left, frame.bottom - frame.top, nullptr,
+                                 nullptr, instance, nullptr);
+    // Windows 11 material behind the whole window, the header drawn where the title bar was.
+    const MARGINS glass{-1, -1, -1, -1};
+    DwmExtendFrameIntoClientArea(app.window, &glass);
+    const DWM_SYSTEMBACKDROP_TYPE backdrop = DWMSBT_MAINWINDOW;
+    const bool mica = SUCCEEDED(DwmSetWindowAttribute(app.window, DWMWA_SYSTEMBACKDROP_TYPE, &backdrop, sizeof(backdrop)));
     const DWM_WINDOW_CORNER_PREFERENCE corners = DWMWCP_ROUND;
     DwmSetWindowAttribute(app.window, DWMWA_WINDOW_CORNER_PREFERENCE, &corners, sizeof(corners));
+    SetWindowPos(app.window, nullptr, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER);
     if (FAILED(app.pipeline.Initialize(app.window))) {
         MessageBoxW(nullptr, L"Не удалось инициализировать видеокарту (Direct3D 11).", L"QBT Camera", MB_ICONERROR);
         return 1;
     }
     app.panel.Create(
-        app.window, instance,
+        app.window, instance, app.settingsFolder,
         [](const std::string& json) {
             qbt::Log("command %s", json.c_str());
             g_app->link.SendCommand(json);
@@ -498,7 +534,17 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int showCo
         [](const std::wstring& deviceId) {
             SaveAudioSetting(deviceId);
             SelectAudioDevice(deviceId);
+        },
+        [](bool dark) {
+            // Caption buttons and the Mica tint follow the app's theme.
+            const BOOL darkMode = dark ? TRUE : FALSE;
+            DwmSetWindowAttribute(g_app->window, DWMWA_USE_IMMERSIVE_DARK_MODE, &darkMode, sizeof(darkMode));
+            g_app->pipeline.SetIdleTheme(dark);
+        },
+        [](IUnknown* swapChain) {
+            if (FAILED(g_app->pipeline.AddUnderlay(swapChain))) qbt::Log("ui: could not add the interface layer");
         });
+    app.panel.SetBackdropAvailable(mica);
     LayoutChildren(app.window);
     RefreshAudioDevices(true);
     SetTimer(app.window, kMeterTimer, 50, nullptr);

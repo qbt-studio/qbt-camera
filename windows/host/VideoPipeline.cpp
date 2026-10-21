@@ -64,11 +64,14 @@ HRESULT VideoPipeline::Initialize(HWND window) {
     // The preview visual floats above the window's own (Direct2D) content.
     RETURN_IF_FAILED(DCompositionCreateDevice(dxgiDevice.Get(), IID_PPV_ARGS(&composition_)));
     RETURN_IF_FAILED(composition_->CreateTargetForHwnd(window, TRUE, &compositionTarget_));
+    // Root holds the interface (added below by the UI) and the video on top of it.
+    RETURN_IF_FAILED(composition_->CreateVisual(&root_));
     RETURN_IF_FAILED(composition_->CreateVisual(&visual_));
     RETURN_IF_FAILED(composition_->CreateRectangleClip(&clip_));
     RETURN_IF_FAILED(visual_->SetContent(swapChain_.Get()));
     RETURN_IF_FAILED(visual_->SetClip(clip_.Get()));
-    RETURN_IF_FAILED(compositionTarget_->SetRoot(visual_.Get()));
+    RETURN_IF_FAILED(root_->AddVisual(visual_.Get(), FALSE, nullptr));
+    RETURN_IF_FAILED(compositionTarget_->SetRoot(root_.Get()));
 
     D2D1_FACTORY_OPTIONS options{};
     RETURN_IF_FAILED(D2D1CreateFactory(D2D1_FACTORY_TYPE_MULTI_THREADED, __uuidof(ID2D1Factory1), &options,
@@ -102,6 +105,23 @@ void VideoPipeline::SetPreviewRect(const RECT& rect, float cornerRadius) {
     wantedWidth_ = static_cast<UINT>(width);
     wantedHeight_ = static_cast<UINT>(height);
     composition_->Commit();
+}
+
+HRESULT VideoPipeline::AddUnderlay(IUnknown* swapChain) {
+    if (!composition_) return E_UNEXPECTED;
+    ComPtr<IDCompositionVisual> underlay;
+    RETURN_IF_FAILED(composition_->CreateVisual(&underlay));
+    RETURN_IF_FAILED(underlay->SetContent(swapChain));
+    RETURN_IF_FAILED(root_->AddVisual(underlay.Get(), FALSE, visual_.Get())); // just below the video
+    return composition_->Commit();
+}
+
+void VideoPipeline::SetIdleTheme(bool dark) {
+    {
+        std::lock_guard lock(mutex_);
+        idleDark_ = dark;
+    }
+    RefreshIdle();
 }
 
 void VideoPipeline::SetIdleMessage(const std::wstring& title, const std::wstring& subtitle) {
@@ -229,7 +249,8 @@ HRESULT VideoPipeline::DrawIdle(ID3D11Texture2D* backBuffer) {
     RETURN_IF_FAILED(d2dContext_->CreateBitmapFromDxgiSurface(surface.Get(), &properties, &bitmap));
     d2dContext_->SetTarget(bitmap.Get());
     d2dContext_->BeginDraw();
-    d2dContext_->Clear(D2D1::ColorF(kCard[0], kCard[1], kCard[2]));
+    // Idle screen follows the interface theme; live video always sits on black-blue bars.
+    d2dContext_->Clear(idleDark_ ? D2D1::ColorF(kCard[0], kCard[1], kCard[2]) : D2D1::ColorF(0xEAEFF8));
 
     const float width = static_cast<float>(backBufferWidth_);
     const float height = static_cast<float>(backBufferHeight_);
@@ -238,7 +259,7 @@ HRESULT VideoPipeline::DrawIdle(ID3D11Texture2D* backBuffer) {
 
     // Soft brand glow behind the logo.
     ComPtr<ID2D1GradientStopCollection> stops;
-    const D2D1_GRADIENT_STOP glowStops[] = {{0.0f, D2D1::ColorF(0x2B7FFF, 0.22f)}, {1.0f, D2D1::ColorF(0x2B7FFF, 0.0f)}};
+    const D2D1_GRADIENT_STOP glowStops[] = {{0.0f, D2D1::ColorF(0x2B7FFF, idleDark_ ? 0.22f : 0.16f)}, {1.0f, D2D1::ColorF(0x2B7FFF, 0.0f)}};
     d2dContext_->CreateGradientStopCollection(glowStops, 2, &stops);
     ComPtr<ID2D1RadialGradientBrush> glow;
     if (stops) {
@@ -268,8 +289,9 @@ HRESULT VideoPipeline::DrawIdle(ID3D11Texture2D* backBuffer) {
         d2dContext_->DrawText(value.c_str(), static_cast<UINT32>(value.size()), format.Get(),
                               D2D1::RectF(0, top, width, top + fontSize * 2), brush.Get());
     };
-    text(idleTitle_, y + size + 22 * unit, 24 * unit, DWRITE_FONT_WEIGHT_SEMI_BOLD, D2D1::ColorF(0xFFFFFF));
-    text(idleSubtitle_, y + size + 60 * unit, 15 * unit, DWRITE_FONT_WEIGHT_NORMAL, D2D1::ColorF(0xFFFFFF, 0.55f));
+    const UINT32 ink = idleDark_ ? 0xFFFFFF : 0x0E1324;
+    text(idleTitle_, y + size + 22 * unit, 24 * unit, DWRITE_FONT_WEIGHT_SEMI_BOLD, D2D1::ColorF(ink, 0.95f));
+    text(idleSubtitle_, y + size + 60 * unit, 15 * unit, DWRITE_FONT_WEIGHT_NORMAL, D2D1::ColorF(ink, 0.55f));
 
     const HRESULT hr = d2dContext_->EndDraw();
     d2dContext_->SetTarget(nullptr);

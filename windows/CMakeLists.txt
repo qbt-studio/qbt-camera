@@ -36,4 +36,4 @@ add_executable(QBTCamera WIN32
     host/VideoPipeline.cpp
     host/VirtualCamera.cpp)
 target_link_libraries(QBTCamera PRIVATE
-    d3d11 dxgi mfplat mfuuid mfsensorgroup wmcodecdspuuid ws2_32 ole32 shell32 user32 gdi32 comctl32 dwmapi avrt d2d1 dwrite dcomp)
+    d3d11 dxgi mfplat mfuuid mfsensorgroup wmcodecdspuuid ws2_32 ole32 shell32 user32 gdi32 comctl32 dwmapi avrt d2d1 dwrite dcomp dxguid)

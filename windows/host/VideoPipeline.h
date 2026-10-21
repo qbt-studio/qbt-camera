@@ -25,6 +25,13 @@ public:
     /// UI thread: where the preview goes (client pixels) and how round its corners are.
     void SetPreviewRect(const RECT& rect, float cornerRadius);
 
+    /// Puts another swap chain (the interface) under the video, in the same composition tree:
+    /// the window's Mica backdrop covers anything that isn't in this topmost tree.
+    HRESULT AddUnderlay(IUnknown* swapChain);
+
+    /// Light or dark idle screen, to match the interface.
+    void SetIdleTheme(bool dark);
+
     /// What the preview shows while no video comes in.
     void SetIdleMessage(const std::wstring& title, const std::wstring& subtitle);
 
@@ -62,9 +69,11 @@ private:
     std::atomic<UINT> wantedWidth_{640};
     std::atomic<UINT> wantedHeight_{360};
     bool showingIdle_ = true;
+    bool idleDark_ = true;
 
     ComPtr<IDCompositionDevice> composition_;
     ComPtr<IDCompositionTarget> compositionTarget_;
+    ComPtr<IDCompositionVisual> root_;
     ComPtr<IDCompositionVisual> visual_;
     ComPtr<IDCompositionRectangleClip> clip_;
 

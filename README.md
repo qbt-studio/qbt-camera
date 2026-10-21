@@ -11,6 +11,13 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/qbt-studio/qbt-camera/releases/latest"><img src="https://img.shields.io/github/v/release/qbt-studio/qbt-camera?color=0078d4&label=release" alt="Release"></a>
+  <img src="https://img.shields.io/badge/platform-Windows%2010%2F11%20%7C%20iOS%2018%2B-7928ca" alt="Platforms">
+  <img src="https://img.shields.io/badge/latency-%3C%205%20ms%20(USB)-success" alt="Latency">
+  <img src="https://img.shields.io/badge/license-Free%20for%20Use-107c41" alt="License">
+</p>
+
+<p align="center">
   <a href="#download">Download</a> ·
   <a href="docs/MANUAL.md">Manual</a> ·
   <a href="#features">Features</a> ·

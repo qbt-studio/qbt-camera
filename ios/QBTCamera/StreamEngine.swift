@@ -66,6 +66,7 @@ final class StreamEngine: ObservableObject {
 
     /// Bottom control panel unfolded (the dock always stays visible).
     @Published var panelExpanded = true
+    @Published var activeTab: ControlTab = .background
 
     // Teleprompter near the front lens: read your script while looking into the camera.
     @Published var prompterVisible = false
@@ -317,6 +318,11 @@ final class StreamEngine: ObservableObject {
         case "screen":
             if let value = command["blackout"] as? Bool { blackout = value }
             if let value = command["panel"] as? Bool { panelExpanded = value }
+        case "tab":
+            if let value = command["value"] as? String, let t = ControlTab(rawValue: value) {
+                activeTab = t
+                panelExpanded = true
+            }
         case "orientation":
             if let value = (command["value"] as? String).flatMap(VideoOrientation.init(rawValue:)) { orientation = value }
         case "preset":

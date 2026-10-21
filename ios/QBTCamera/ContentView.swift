@@ -27,7 +27,6 @@ enum ControlTab: String, CaseIterable, Identifiable {
 /// Full-screen viewfinder with Liquid Glass controls on top (QBT Studio design).
 struct ContentView: View {
     @EnvironmentObject private var engine: StreamEngine
-    @State private var tab = ControlTab.exposure
     @State private var showGrid = false
     @State private var editingPrompter = false
     @State private var pinchStartZoom: Double?
@@ -79,7 +78,7 @@ struct ContentView: View {
                 Spacer(minLength: 0)
                 lensRow
                     .offset(y: appeared ? 0 : 80)
-                ControlPanelCard(tab: $tab, expanded: $engine.panelExpanded)
+                ControlPanelCard(tab: $engine.activeTab, expanded: $engine.panelExpanded)
                     .offset(y: appeared ? 0 : 300)
             }
             .opacity(appeared ? 1 : 0)
@@ -119,7 +118,7 @@ struct ContentView: View {
         HStack(spacing: 8) {
             Button {
                 withAnimation(Self.spring) {
-                    tab = .stream
+                    engine.activeTab = .stream
                     engine.panelExpanded = true
                 }
             } label: {

@@ -56,25 +56,39 @@ Windows app — Zoom, Microsoft Teams, Google Meet, Discord, OBS, browsers — a
 
 ## Screenshots
 
+### Windows PC
+
 | Windows — dark | Windows — light |
 |---|---|
 | ![Camera controls](docs/screenshots/windows-dark.png) | ![Light theme](docs/screenshots/windows-light.png) |
 | **Replace background** | **Stream settings & teleprompter** |
 | ![Replace](docs/screenshots/windows-replace.png) | ![Stream](docs/screenshots/windows-stream.png) |
 
-<p align="center">
-  <img src="docs/screenshots/iphone-black-screen.png" width="300" alt="QBT Camera on iPhone — black screen mode keeps streaming while the display is off"><br>
-  <sub>iPhone: black-screen mode — the display is off, the camera keeps streaming.</sub>
-</p>
+### iPhone
 
+| Background & depth | Pro exposure controls | Color looks & retouch |
+|:---:|:---:|:---:|
+| <img src="docs/screenshots/iphone-background.png" width="260" alt="iPhone background mode with TrueDepth blur"> | <img src="docs/screenshots/iphone-exposure.png" width="260" alt="iPhone manual exposure controls"> | <img src="docs/screenshots/iphone-color.png" width="260" alt="iPhone cinematic color looks and skin smoothing"> |
+| **TrueDepth / LiDAR depth blur** | **Manual ISO, shutter & white balance** | **Cinematic looks & skin smoothing** |
+
+| Stream settings & audio | Teleprompter | Black-screen mode |
+|:---:|:---:|:---:|
+| <img src="docs/screenshots/iphone-stream.png" width="260" alt="iPhone stream presets and audio monitor"> | <img src="docs/screenshots/iphone-prompter.png" width="260" alt="iPhone teleprompter near the camera lens"> | <img src="docs/screenshots/iphone-black-screen.png" width="260" alt="iPhone cool and quiet black screen mode"> |
+| **4K/1080p, audio meter & latency** | **Look into camera while reading script** | **Display off, keeps phone cool & streaming** |
 
 ## Download
 
-**Windows:** get `QBTCamera-Windows-x.y.zip` from **[Releases](../../releases)**, unzip and run
-**`Install QBT Camera.cmd`**. Details in the **[manual](docs/MANUAL.md)**.
+| Platform | Ready file | Alternative / Installer |
+|---|---|---|
+| 🪟 **Windows** | **[QBTCamera.exe](release/QBTCamera.exe)** | **[QBTCamera-Windows-1.0.zip](release/QBTCamera-Windows-1.0.zip)** (installer package) |
+| 📱 **iOS** | **[QBTCamera.ipa](release/QBTCamera.ipa)** | Build from source with Xcode (free Apple ID) |
 
-**iPhone:** the App Store version is coming. Until then the app can be installed from source with a
-free Apple ID — see [Install on iPhone](docs/MANUAL.md#3-install-on-iphone).
+**Windows installation:** get `QBTCamera-Windows-1.0.zip` (or download from **[Releases](../../releases)**), unzip and run **`Install QBT Camera.cmd`**. You can also run **`QBTCamera.exe`** directly. Details in the **[manual](docs/MANUAL.md)**.
+
+**iPhone installation:**
+- **Ready .ipa:** download **`release/QBTCamera.ipa`** and install with any sideloading tool (**AltStore**, **Sideloadly**, **TrollStore**).
+- **From source:** open `ios/QBTCamera.xcodeproj` in Xcode on a Mac and press Run with a free Apple ID — see [Install on iPhone](docs/MANUAL.md#3-install-on-iphone).
+- **App Store:** App Store release coming soon.
 
 ### Requirements
 

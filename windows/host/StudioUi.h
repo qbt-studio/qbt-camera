@@ -212,6 +212,8 @@ private:
     std::unordered_map<int, float> animations_;
     bool animating_ = false;
     bool wantsPulse_ = false;
+    bool drawing_ = false;
+    std::function<void()> afterFrame_;
     float time_ = 0;
     LARGE_INTEGER lastFrame_{};
     float deltaSeconds_ = 0;

@@ -33,4 +33,7 @@ private:
     std::mutex sendMutex_; // acks (stream thread) and commands (UI thread) must not interleave
     std::mutex addressMutex_;
     std::string lastWifiAddress_;
+    bool hasFirstPacket_ = false;
+    qbt::PacketHeader firstHeader_{};
+    std::vector<uint8_t> firstPayload_;
 };

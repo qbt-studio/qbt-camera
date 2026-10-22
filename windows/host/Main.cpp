@@ -200,8 +200,13 @@ void StreamLoop() {
                 // The phone did the background itself: only the PC's color grade (LUT) may still apply.
                 if (!backgroundOnPc) background.mode = BackgroundSettings::Mode::Off;
                 if (background.mode != BackgroundSettings::Mode::Off || !background.lutPath.empty()) {
-                    // The matte for this very frame arrives just before it (same timestamp).
-                    const bool auxFresh = latestAux.texture && GetTickCount64() - latestAuxTime < 500;
+                    // The matte for this very frame arrives just before it (same timestamp) and must match orientation.
+                    const LONG frameW = frame.visible.right - frame.visible.left;
+                    const LONG frameH = frame.visible.bottom - frame.visible.top;
+                    const LONG auxHalfW = (latestAux.visible.right - latestAux.visible.left) / 2;
+                    const LONG auxH = latestAux.visible.bottom - latestAux.visible.top;
+                    const bool auxFresh = latestAux.texture && GetTickCount64() - latestAuxTime < 500 &&
+                                          (frameW >= frameH) == (auxHalfW >= auxH);
                     const DecodedFrame* aux = auxFresh ? &latestAux : nullptr;
                     DecodedFrame composited;
                     if (app.pipeline.Composite(frame, aux, background, composited) == S_OK) frame = std::move(composited);
@@ -226,7 +231,7 @@ void StreamLoop() {
             const ULONGLONG now = GetTickCount64();
             if (now - windowStart >= 1000) {
                 const double seconds = (now - windowStart) / 1000.0;
-                HostStatus status = MakeStatus(HostStatus::Phase::Connected, route, usb);
+                HostStatus status = MakeStatus(phonePaused ? HostStatus::Phase::Paused : HostStatus::Phase::Connected, route, usb);
                 status.width = width;
                 status.height = height;
                 status.fps = framesShown / seconds;
@@ -491,9 +496,14 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         g_app->tray.Remove();
         DestroyWindow(window);
         return 0;
-    case WM_DESTROY:
+    case WM_DESTROY: {
+        MSG pending;
+        while (PeekMessageW(&pending, window, kPhoneMessage, kPhoneMessage, PM_REMOVE)) {
+            delete reinterpret_cast<std::string*>(pending.lParam);
+        }
         PostQuitMessage(0);
         return 0;
+    }
     default:
         break;
     }

@@ -484,10 +484,11 @@ int StudioUi::HeaderHeight() const {
 // Frame
 
 void StudioUi::Frame() {
-    if (!target_) return;
+    if (!target_ || drawing_) return;
     RECT client{};
     GetClientRect(window_, &client);
     if (!ResizeSwapChain(static_cast<UINT>(client.right), static_cast<UINT>(client.bottom))) return;
+    drawing_ = true;
 
     LARGE_INTEGER now, frequency;
     QueryPerformanceCounter(&now);
@@ -524,7 +525,7 @@ void StudioUi::Frame() {
     const HRESULT hr = target_->EndDraw();
     target_->SetTarget(nullptr);
     if (FAILED(hr)) qbt::Log("ui: draw failed 0x%08lx", hr);
-    if (SUCCEEDED(hr)) swapChain_->Present(1, 0);
+    if (SUCCEEDED(hr)) swapChain_->Present(0, 0);
 
     if (released_) active_ = 0;
     pressed_ = released_ = false;
@@ -540,6 +541,12 @@ void StudioUi::Frame() {
     // Live dots breathe slowly; no need for 60 fps there.
     if (wantsPulse_ && IsWindowVisible(parent_) && !IsIconic(parent_)) SetTimer(window_, kPulseTimer, 50, nullptr);
     else KillTimer(window_, kPulseTimer);
+    drawing_ = false;
+    if (afterFrame_) {
+        auto action = std::move(afterFrame_);
+        afterFrame_ = nullptr;
+        action();
+    }
 }
 
 void StudioUi::DrawBackground(float width, float height) {
@@ -964,11 +971,14 @@ float StudioUi::EffectsTab(float x, float y, float width) {
                 imageTitle = L"Picture: " + imagePath_.substr(imagePath_.find_last_of(L"\\/") + 1);
             if (Chip(kBackdropImage, {ix, imageTop, ix + iw, imageTop + kChipHeight}, imageTitle,
                      imageAvailable && useImage_ && !imagePath_.empty(), connected_ && imageAvailable)) {
-                const std::wstring picked = PickFile(L"Background picture", L"Pictures", L"*.jpg;*.jpeg;*.png;*.bmp;*.heic;*.webp");
-                if (!picked.empty()) imagePath_ = picked;
-                if (!imagePath_.empty()) useImage_ = true;
-                SaveLook();
-                NotifyLook();
+                afterFrame_ = [this] {
+                    const std::wstring picked = PickFile(L"Background picture", L"Pictures", L"*.jpg;*.jpeg;*.png;*.bmp;*.heic;*.webp");
+                    if (!picked.empty()) imagePath_ = picked;
+                    if (!imagePath_.empty()) useImage_ = true;
+                    SaveLook();
+                    NotifyLook();
+                    Invalidate();
+                };
             }
             row = top + kChipHeight * 3 + 16 + 14;
         }
@@ -1027,12 +1037,15 @@ float StudioUi::EffectsTab(float x, float y, float width) {
         float lutRow = lutGroup.top + 14;
         const std::wstring lutTitle = hasLut ? L"LUT: " + lutPath_.substr(lutPath_.find_last_of(L"\\/") + 1) : L"Load a .cube LUT…";
         if (Chip(kLutLoad, {ix, lutRow, ix + iw, lutRow + kChipHeight}, lutTitle, hasLut, true)) {
-            const std::wstring picked = PickFile(L"Color grading LUT", L"Cube LUT", L"*.cube");
-            if (!picked.empty()) {
-                lutPath_ = picked;
-                SaveLook();
-                NotifyLook();
-            }
+            afterFrame_ = [this] {
+                const std::wstring picked = PickFile(L"Color grading LUT", L"Cube LUT", L"*.cube");
+                if (!picked.empty()) {
+                    lutPath_ = picked;
+                    SaveLook();
+                    NotifyLook();
+                    Invalidate();
+                }
+            };
         }
         lutRow += kChipHeight + 14;
         if (hasLut) {
@@ -1205,25 +1218,28 @@ float StudioUi::StreamTab(float x, float y, float width) {
         }
         const float editTop = group.bottom - kChipHeight - 12;
         if (Chip(kPrompterEdit, {ix, editTop, ix + iw, editTop + kChipHeight}, L"Edit text…", false, connected_)) {
-            std::wstring text = prompterText_;
-            if (EditText(text)) {
-                prompterText_ = text;
-                SaveLook();
-                // UTF-16 → UTF-8 → JSON string.
-                const int length = WideCharToMultiByte(CP_UTF8, 0, text.c_str(), static_cast<int>(text.size()), nullptr, 0, nullptr, nullptr);
-                std::string utf8(static_cast<size_t>(length), '\0');
-                WideCharToMultiByte(CP_UTF8, 0, text.c_str(), static_cast<int>(text.size()), utf8.data(), length, nullptr, nullptr);
-                std::string escaped;
-                for (const char c : utf8) {
-                    if (c == '"' || c == '\\') escaped += '\\', escaped += c;
-                    else if (c == '\n') escaped += "\\n";
-                    else if (c == '\r') continue;
-                    else if (c == '\t') escaped += "\\t";
-                    else escaped += c;
+            afterFrame_ = [this] {
+                std::wstring text = prompterText_;
+                if (EditText(text)) {
+                    prompterText_ = text;
+                    SaveLook();
+                    // UTF-16 → UTF-8 → JSON string.
+                    const int length = WideCharToMultiByte(CP_UTF8, 0, text.c_str(), static_cast<int>(text.size()), nullptr, 0, nullptr, nullptr);
+                    std::string utf8(static_cast<size_t>(length), '\0');
+                    WideCharToMultiByte(CP_UTF8, 0, text.c_str(), static_cast<int>(text.size()), utf8.data(), length, nullptr, nullptr);
+                    std::string escaped;
+                    for (const char c : utf8) {
+                        if (c == '"' || c == '\\') escaped += '\\', escaped += c;
+                        else if (c == '\n') escaped += "\\n";
+                        else if (c == '\r') continue;
+                        else if (c == '\t') escaped += "\\t";
+                        else escaped += c;
+                    }
+                    if (sink_) sink_(R"({"cmd":"prompter","text":")" + escaped + R"(","visible":true})");
+                    prompterVisible_ = true;
+                    Invalidate();
                 }
-                if (sink_) sink_(R"({"cmd":"prompter","text":")" + escaped + R"(","visible":true})");
-                prompterVisible_ = true;
-            }
+            };
         }
         y = group.bottom + kGroupGap;
     }
@@ -1545,6 +1561,7 @@ double StudioUi::ShutterT(double micros) const {
 }
 
 void StudioUi::OnCapabilities(const JsonObject& caps) {
+    const bool firstCaps = !connected_;
     connected_ = true;
     lens_ = caps.String("lens");
     const std::string lenses = "," + caps.String("lenses") + ",";
@@ -1556,8 +1573,9 @@ void StudioUi::OnCapabilities(const JsonObject& caps) {
     hasTorch_ = caps.Bool("torch");
     microphoneAvailable_ = caps.Bool("microphone");
     depthSensor_ = caps.String("depth");
-    // Background effects run on this PC's GPU by default: tell the phone as soon as it connects.
-    Queue(Group::Effects, Format(R"({"cmd":"effects","processing":"%s"})", processing_.c_str()));
+    // Background effects run on this PC's GPU by default: tell the phone once when it connects,
+    // without marking Group::Effects as touched so OnState still adopts the phone's active effects.
+    if (firstCaps && sink_) sink_(Format(R"({"cmd":"effects","processing":"%s"})", processing_.c_str()));
     minIso_ = std::max(1.0, caps.Number("minISO", 50));
     maxIso_ = std::max(minIso_ + 1, caps.Number("maxISO", 3200));
     minZoom_ = std::max(1.0, caps.Number("minZoom", 1));
@@ -1601,6 +1619,7 @@ void StudioUi::OnState(const JsonObject& state) {
         blur_ = state.Number("blur", 0.6);
         if (state.Has("background")) background_ = state.String("background");
         else background_ = blur_ > 0.01 ? "portrait" : "off"; // older iPhone app
+        if (state.Has("processing")) processing_ = state.String("processing");
         if (state.Has("backdrop")) backdropName_ = state.String("backdrop");
         keySensitivity_ = state.Number("keySensitivity", 0.5);
         keySoftness_ = state.Number("keySoftness", 0.4);

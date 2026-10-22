@@ -44,6 +44,8 @@ final class StreamServer {
     private var sendTimes = [UInt64](repeating: 0, count: 256)
     private var awaitingKeyframe = true
     private var keyframeWanted = false
+    private var lastKeyframeRequest = DispatchTime.now().uptimeNanoseconds
+    private var lastAckProgress = DispatchTime.now().uptimeNanoseconds
 
     init(port: UInt16) {
         self.port = NWEndpoint.Port(rawValue: port)!
@@ -81,8 +83,24 @@ final class StreamServer {
         queue.async { [self] in
             guard let connection else { return }
             // After a drop, P-frames reference data the receiver never got: skip to the next keyframe.
+            let now = DispatchTime.now().uptimeNanoseconds
             if awaitingKeyframe && !keyframe {
                 stats.dropped += 1
+                // The keyframe request may have been lost (encoder rebuilt, frame dropped): ask again.
+                if now - lastKeyframeRequest > 1_000_000_000 {
+                    lastKeyframeRequest = now
+                    onKeyframeNeeded?()
+                }
+                return
+            }
+            if framesInFlight >= frameBudget, now - lastAckProgress > 3_000_000_000 {
+                // No acknowledgement for 3 s although TCP is up: the PC was stalled. Resync instead of
+                // waiting forever.
+                framesAcked = framesSent
+                lastAckProgress = now
+                awaitingKeyframe = true
+                lastKeyframeRequest = now
+                onKeyframeNeeded?()
                 return
             }
             if framesInFlight >= frameBudget {
@@ -171,6 +189,7 @@ final class StreamServer {
         framesSent = 0
         framesAcked = 0
         awaitingKeyframe = true
+        lastAckProgress = DispatchTime.now().uptimeNanoseconds
         keyframeWanted = false
         newConnection.stateUpdateHandler = { [weak self, weak newConnection] state in
             guard let self, let newConnection, self.connection === newConnection else { return }
@@ -233,6 +252,7 @@ final class StreamServer {
     private func handleAck(_ count: UInt32) {
         let acknowledged = Int(count &- framesAcked)
         guard acknowledged > 0, acknowledged <= framesInFlight else { return }
+        if count != framesAcked { lastAckProgress = DispatchTime.now().uptimeNanoseconds }
         framesAcked = count
         let sentAt = sendTimes[Int((count &- 1) & 0xFF)]
         stats.roundTripTotal += DispatchTime.now().uptimeNanoseconds - sentAt

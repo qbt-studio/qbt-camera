@@ -187,6 +187,7 @@ final class StreamEngine: ObservableObject {
         }
         // New lens or format: tell the PC what the camera can do now.
         camera.onDepth = { depth in effects.updateDepth(depth) }
+        camera.onFaces = { faces in effects.updateFaces(faces) }
         camera.onConfigured = { device, lens in
             if let json = CameraControl.encode(capabilities(of: device, lens: lens)) {
                 server.sendMessage(json)
@@ -446,6 +447,7 @@ final class StreamEngine: ObservableObject {
         roundTripMillis = stats.roundTripMillis
         wifiAddress = NetworkInfo.wifiAddress()
         if clientName != nil && !paused { adaptBitrate(droppedFrames: stats.dropped) }
+        if !paused { camera.ensureRunning() } // recovers from thermal shutdowns and stuck sessions
     }
 
     /// Back off fast when the link drops frames, recover slowly when it keeps up.

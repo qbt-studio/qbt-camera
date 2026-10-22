@@ -12,6 +12,7 @@ final class VideoEncoder {
     private var size = (width: Int32(0), height: Int32(0))
     private var fps = 30
     private var bitrate = 10_000_000
+    private var bitrateChanged = false
     private var keyframeRequested = false
     private var needsReset = false
 
@@ -25,18 +26,18 @@ final class VideoEncoder {
         lock.withLock {
             self.fps = fps
             self.bitrate = bitrate
+            bitrateChanged = false
             needsReset = true
         }
     }
 
     /// Changes the target bitrate of the running session without a keyframe (adaptive bitrate).
+    /// Applied on the encoding thread so the main thread never blocks on `VTSessionSetProperty`.
     func setBitrate(_ bitrate: Int) {
         lock.withLock {
+            guard self.bitrate != bitrate else { return }
             self.bitrate = bitrate
-            guard let session else { return }
-            VTSessionSetProperty(session, key: kVTCompressionPropertyKey_AverageBitRate, value: bitrate as CFNumber)
-            VTSessionSetProperty(session, key: kVTCompressionPropertyKey_DataRateLimits,
-                                 value: [bitrate * 3 / 2 / 8, 1] as CFArray)
+            bitrateChanged = true
         }
     }
 
@@ -47,21 +48,29 @@ final class VideoEncoder {
     func encode(_ pixelBuffer: CVPixelBuffer, pts: CMTime) {
         let width = Int32(CVPixelBufferGetWidth(pixelBuffer))
         let height = Int32(CVPixelBufferGetHeight(pixelBuffer))
-        let (session, forceKeyframe, retired): (VTCompressionSession?, Bool, VTCompressionSession?) = lock.withLock {
+        let (session, forceKeyframe, newBitrate, retired): (VTCompressionSession?, Bool, Int?, VTCompressionSession?) = lock.withLock {
             // Rotation changes the buffer size: rebuild so the stream carries the new SPS.
             var retired: VTCompressionSession?
             if self.session == nil || needsReset || size.width != width || size.height != height {
                 retired = takeSession()
                 needsReset = false
+                bitrateChanged = false
                 self.session = makeSession(width: width, height: height)
                 size = (width, height)
                 keyframeRequested = true
             }
+            let updatedBitrate = bitrateChanged ? bitrate : nil
+            bitrateChanged = false
             defer { keyframeRequested = false }
-            return (self.session, keyframeRequested, retired)
+            return (self.session, keyframeRequested, updatedBitrate, retired)
         }
         if let retired { VTCompressionSessionInvalidate(retired) } // outside the lock: may wait for frames in flight
         guard let session else { return }
+        if let newBitrate {
+            VTSessionSetProperty(session, key: kVTCompressionPropertyKey_AverageBitRate, value: newBitrate as CFNumber)
+            VTSessionSetProperty(session, key: kVTCompressionPropertyKey_DataRateLimits,
+                                 value: [newBitrate * 3 / 2 / 8, 1] as CFArray)
+        }
 
         let properties = forceKeyframe ? [kVTEncodeFrameOptionKey_ForceKeyFrame: true] as CFDictionary : nil
         let status = VTCompressionSessionEncodeFrame(session, imageBuffer: pixelBuffer, presentationTimeStamp: pts,

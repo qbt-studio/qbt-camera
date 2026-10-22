@@ -38,16 +38,16 @@ struct CameraUIState: Equatable {
             (values[key] as? Bool) ?? fallback
         }
         exposureAuto = flag(state, "exposureAuto", true)
-        iso = number(state, "iso", iso)
-        shutterMicros = number(state, "shutterUs", shutterMicros)
-        bias = number(state, "bias", 0)
+        iso = number(state, "iso", iso).rounded()
+        shutterMicros = number(state, "shutterUs", shutterMicros).rounded()
+        bias = (number(state, "bias", 0) * 20).rounded() / 20
         whiteBalanceAuto = flag(state, "wbAuto", true)
-        kelvin = number(state, "kelvin", kelvin)
-        tint = number(state, "tint", 0)
+        kelvin = (number(state, "kelvin", kelvin) / 10).rounded() * 10
+        tint = number(state, "tint", 0).rounded()
         focusAuto = flag(state, "focusAuto", true)
-        lensPosition = number(state, "lensPosition", lensPosition)
-        zoom = number(state, "zoom", 1)
-        torch = number(state, "torch", 0)
+        lensPosition = (number(state, "lensPosition", lensPosition) * 100).rounded() / 100
+        zoom = (number(state, "zoom", 1) * 100).rounded() / 100
+        torch = (number(state, "torch", 0) * 100).rounded() / 100
         torchAvailable = flag(state, "torchAvailable", true)
 
         minISO = max(1, number(caps, "minISO", minISO))

@@ -49,28 +49,20 @@ final class VideoEffects {
 
     private let lock = NSLock()
     private var settings = EffectSettings()
-    // Results of the background Vision pass, guarded by `lock`.
-    private var latestMask: CVPixelBuffer?
-    private var latestFaces: [CGRect] = [] // normalized, bottom-left origin (Vision and Core Image agree)
+    // Face rectangles (normalized, bottom-left origin), guarded by `lock`.
+    private var latestFaces: [CGRect] = []
     private var lastFaceTime = 0.0
-    private var visionBusy = false
-    private let visionQueue = DispatchQueue(label: "qbt.effects.vision", qos: .userInitiated)
+    private var lastVisionFaceCheck = 0.0
+    private var ispFacesAvailable = false
 
     private let context: CIContext
     private let outputColorSpace = CGColorSpace(name: CGColorSpace.itur_709)!
-    private let sequenceHandler = VNSequenceRequestHandler() // temporal smoothing across frames
-    private let segmentation: VNGeneratePersonSegmentationRequest = {
-        let request = VNGeneratePersonSegmentationRequest()
-        request.qualityLevel = .balanced
-        request.outputPixelFormat = kCVPixelFormatType_OneComponent8
-        return request
-    }()
     private let faceDetection = VNDetectFaceRectanglesRequest()
     // The person mask is computed on the very frame being sent (a late mask leaves trails when
-    // you move); faces are fine a frame or two late and stay in the background pass.
+    // you move).
     private let liveSegmentation: VNGeneratePersonSegmentationRequest = {
         let request = VNGeneratePersonSegmentationRequest()
-        request.qualityLevel = .balanced // runs alongside the GPU (pipelined), so it fits in a 30 fps frame
+        request.qualityLevel = .balanced
         request.outputPixelFormat = kCVPixelFormatType_OneComponent8
         return request
     }()
@@ -86,7 +78,8 @@ final class VideoEffects {
     private var faces: [CGRect] = [] // snapshot of latestFaces for the frame being rendered
     private var framingRect: CGRect?
     private var processingMillis = 0.0
-    private var framesOnGPU = 0
+    private var framesInDelivery = 0
+    private var lastDelivery = CACurrentMediaTime()
     private let deliveryQueue = DispatchQueue(label: "qbt.effects.delivery", qos: .userInteractive)
     private var visionMillis = 0.0
     private var auxPool: CVPixelBufferPool?
@@ -109,6 +102,21 @@ final class VideoEffects {
         background.setDepth(depth)
     }
 
+    /// Hardware ISP face rectangles from `AVCaptureMetadataOutput` (0% GPU/ANE cost), or `nil` when ISP face detection is inactive.
+    func updateFaces(_ newFaces: [CGRect]?) {
+        let now = CACurrentMediaTime()
+        lock.withLock {
+            if let newFaces {
+                ispFacesAvailable = true
+                latestFaces = newFaces
+                if !newFaces.isEmpty { lastFaceTime = now }
+            } else {
+                ispFacesAvailable = false
+                latestFaces = []
+            }
+        }
+    }
+
     var hasDepth: Bool { background.hasDepth }
 
     func resampleKeyColor() {
@@ -129,9 +137,9 @@ final class VideoEffects {
     /// Called on the capture queue for every frame; `deliver` gets the result (the input itself when
     /// no effect is on) on the delivery queue, always in capture order.
     ///
-    /// Pipelined: the GPU renders frame N while Vision already works on frame N+1, so the frame rate
-    /// is set by the slower of the two instead of their sum. At most two frames are on the GPU;
-    /// beyond that a frame is dropped rather than queued (latency must not grow).
+    /// Critically, all Vision and Metal GPU reads of `pixelBuffer` complete before `process` returns on
+    /// the capture queue so `AVCaptureVideoDataOutput` never recycles the camera `IOSurface` back to the
+    /// ISP while a GPU or Neural Engine `IOFence` is still waiting on it.
     func process(_ pixelBuffer: CVPixelBuffer, pts: CMTime, deliver: @escaping (CVPixelBuffer, CMTime) -> Void) {
         let settings = current
         guard settings.isActive else {
@@ -139,7 +147,13 @@ final class VideoEffects {
             deliveryQueue.async { deliver(pixelBuffer, pts) }
             return
         }
-        guard lock.withLock({ framesOnGPU < 2 }) else { return }
+        let canDeliver: Bool = lock.withLock {
+            if framesInDelivery >= 2 && CACurrentMediaTime() - lastDelivery > 2 {
+                framesInDelivery = 0
+            }
+            return framesInDelivery < 2
+        }
+        guard canDeliver else { return }
         let started = CACurrentMediaTime()
         let width = CVPixelBufferGetWidth(pixelBuffer)
         let height = CVPixelBufferGetHeight(pixelBuffer)
@@ -149,10 +163,24 @@ final class VideoEffects {
         // the PC's GPU refines and composites. The phone keeps only the Neural Engine work (cool).
         let remote = settings.processOnPC && settings.background != .off && onAuxFrame != nil
 
-        // 1. Faces in the background (a frame or two late is fine); the person mask on this very frame.
+        // 1. Faces from the camera ISP (`AVCaptureMetadataOutput`), falling back to throttled (8 Hz)
+        // stateless Vision on the capture queue only if the active format doesn't emit ISP face metadata.
         let wantsMask = settings.background == .portrait || settings.background == .replace
         let wantsFaces = settings.framing || settings.retouch > 0.01 || settings.background == .portrait
-        scheduleVision(on: pixelBuffer, mask: false, faces: wantsFaces)
+        let useVisionFaces: Bool = lock.withLock {
+            guard wantsFaces, !ispFacesAvailable, started - lastVisionFaceCheck >= 0.125 else { return false }
+            lastVisionFaceCheck = started
+            return true
+        }
+        if useVisionFaces {
+            try? VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: .up).perform([faceDetection])
+            let detected = (faceDetection.results ?? []).map(\.boundingBox)
+            let now = CACurrentMediaTime()
+            lock.withLock {
+                latestFaces = detected
+                if !detected.isEmpty { lastFaceTime = now }
+            }
+        }
         let lastFaceTime: Double
         (faces, lastFaceTime) = lock.withLock { (wantsFaces ? latestFaces : [], self.lastFaceTime) }
         var mask: CVPixelBuffer?
@@ -194,10 +222,12 @@ final class VideoEffects {
         func geometry(_ input: CIImage) -> CIImage {
             var result = input
             if let framing {
-                let scale = extent.width / framing.width
+                let scaleX = extent.width / framing.width
+                let scaleY = extent.height / framing.height
                 result = result.cropped(to: framing)
                     .transformed(by: CGAffineTransform(translationX: -framing.minX, y: -framing.minY)
-                        .concatenating(CGAffineTransform(scaleX: scale, y: scale)))
+                        .concatenating(CGAffineTransform(scaleX: scaleX, y: scaleY)))
+                    .cropped(to: extent)
             }
             if settings.mirror {
                 result = result.transformed(by: CGAffineTransform(a: -1, b: 0, c: 0, d: 1, tx: extent.width, ty: 0))
@@ -216,7 +246,9 @@ final class VideoEffects {
             deliveryQueue.async { deliver(pixelBuffer, pts) }
             return
         }
-        CVBufferPropagateAttachments(pixelBuffer, output)
+        CVBufferSetAttachment(output, kCVImageBufferYCbCrMatrixKey, kCVImageBufferYCbCrMatrix_ITU_R_709_2, .shouldPropagate)
+        CVBufferSetAttachment(output, kCVImageBufferColorPrimariesKey, kCVImageBufferColorPrimaries_ITU_R_709_2, .shouldPropagate)
+        CVBufferSetAttachment(output, kCVImageBufferTransferFunctionKey, kCVImageBufferTransferFunction_ITU_R_709_2, .shouldPropagate)
         let destination = CIRenderDestination(pixelBuffer: output)
         destination.colorSpace = outputColorSpace
         guard let task = try? context.startTask(toRender: image.cropped(to: outputExtent), from: outputExtent, to: destination,
@@ -251,17 +283,27 @@ final class VideoEffects {
             }
         }
 
-        lock.withLock { framesOnGPU += 1 }
-        deliveryQueue.async { [self] in
+        // Wait for the GPU render to complete while `pixelBuffer` and `mask` are still strongly retained
+        // on the capture queue, preventing `IOSurface` recycling while in flight on the GPU.
+        withExtendedLifetime((pixelBuffer, mask)) {
             _ = try? task.waitUntilCompleted()
             if let auxRender {
                 _ = try? auxRender.task.waitUntilCompleted()
-                onAuxFrame?(auxRender.buffer, pts) // before the picture: the PC pairs them by timestamp
             }
-            let millis = (CACurrentMediaTime() - started) * 1000
+        }
+        let millis = (CACurrentMediaTime() - started) * 1000
+        lock.withLock {
+            framesInDelivery += 1
+            processingMillis = processingMillis * 0.9 + millis * 0.1
+        }
+        let auxBuffer = auxRender?.buffer
+        deliveryQueue.async { [self] in
+            if let auxBuffer {
+                onAuxFrame?(auxBuffer, pts) // before the picture: the PC pairs them by timestamp
+            }
             lock.withLock {
-                framesOnGPU -= 1
-                processingMillis = processingMillis * 0.9 + millis * 0.1
+                framesInDelivery = max(0, framesInDelivery - 1)
+                lastDelivery = CACurrentMediaTime()
             }
             deliver(output, pts)
         }
@@ -309,32 +351,6 @@ final class VideoEffects {
             return CGRect(x: 0, y: ((extent.height - wantedShort) / 2).rounded(), width: extent.width, height: wantedShort)
         }
         return CGRect(x: ((extent.width - wantedShort) / 2).rounded(), y: 0, width: wantedShort, height: extent.height)
-    }
-
-    /// Starts a Vision pass on this frame unless the previous one is still running.
-    private func scheduleVision(on pixelBuffer: CVPixelBuffer, mask: Bool, faces: Bool) {
-        let start: Bool = lock.withLock {
-            if !mask { latestMask = nil }
-            if !faces { latestFaces = [] }
-            guard (mask || faces) && !visionBusy else { return false }
-            visionBusy = true
-            return true
-        }
-        guard start else { return }
-        visionQueue.async { [self] in
-            var requests: [VNRequest] = []
-            if faces { requests.append(faceDetection) }
-            if mask { requests.append(segmentation) }
-            try? sequenceHandler.perform(requests, on: pixelBuffer, orientation: .up)
-            let newMask = mask ? segmentation.results?.first?.pixelBuffer : nil
-            let newFaces = faces ? (faceDetection.results ?? []).map(\.boundingBox) : []
-            lock.withLock {
-                latestMask = newMask
-                latestFaces = newFaces
-                if !newFaces.isEmpty { lastFaceTime = CACurrentMediaTime() }
-                visionBusy = false
-            }
-        }
     }
 
     // MARK: - Effects
@@ -419,6 +435,12 @@ final class VideoEffects {
     /// Digital pan/zoom that keeps the face(s) in the upper-middle third, gliding smoothly.
     private func nextFramingRect(extent: CGRect, holdFace: Bool) -> CGRect {
         let aspect = extent.width / extent.height
+        let current: CGRect
+        if let previous = framingRect, previous.height > 0, abs(previous.width / previous.height - aspect) < 0.05 {
+            current = previous
+        } else {
+            current = extent
+        }
         var target = extent
         if !faces.isEmpty {
             let pixelFaces = faces.map { VNImageRectForNormalizedRect($0, Int(extent.width), Int(extent.height)) }
@@ -439,19 +461,22 @@ final class VideoEffects {
             target = CGRect(x: center.x - width / 2, y: center.y - height / 2, width: width, height: height)
             target.origin.x = min(max(target.minX, extent.minX), extent.maxX - width)
             target.origin.y = min(max(target.minY, extent.minY), extent.maxY - height)
-        } else if let previous = framingRect, holdFace {
-            target = previous // the face vanished briefly (turned away): hold the shot
+        } else if holdFace {
+            target = current // the face vanished briefly (turned away): hold the shot
         }
 
-        let current = framingRect ?? extent
         // Dead zone: ignore tiny moves so the picture doesn't wobble.
         let moved = abs(target.midX - current.midX) + abs(target.midY - current.midY) + abs(target.width - current.width)
         let goal = moved < extent.width * 0.02 ? current : target
         let smoothing: CGFloat = 0.07
-        let next = CGRect(x: current.minX + (goal.minX - current.minX) * smoothing,
+        var next = CGRect(x: current.minX + (goal.minX - current.minX) * smoothing,
                           y: current.minY + (goal.minY - current.minY) * smoothing,
                           width: current.width + (goal.width - current.width) * smoothing,
                           height: current.height + (goal.height - current.height) * smoothing)
+        next.size.width = min(next.width, extent.width)
+        next.size.height = min(next.height, extent.height)
+        next.origin.x = min(max(next.minX, extent.minX), extent.maxX - next.width)
+        next.origin.y = min(max(next.minY, extent.minY), extent.maxY - next.height)
         framingRect = next
         return next
     }

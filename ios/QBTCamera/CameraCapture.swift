@@ -16,7 +16,7 @@ enum CaptureError: LocalizedError {
 /// Owns the AVCaptureSession and hands raw NV12 frames to `onFrame` with no extra copies,
 /// and (when enabled) microphone audio to `onAudio`.
 final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptureAudioDataOutputSampleBufferDelegate,
-    AVCaptureDepthDataOutputDelegate {
+    AVCaptureDepthDataOutputDelegate, AVCaptureMetadataOutputObjectsDelegate {
     let session = AVCaptureSession()
 
     /// Called on the video queue for every captured frame.
@@ -28,10 +28,14 @@ final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     var onAudio: ((CMSampleBuffer) -> Void)?
     /// Depth maps (LiDAR / TrueDepth) while depth is on, nil when it turns off. Called on the depth queue.
     var onDepth: ((AVDepthData?) -> Void)?
+    /// Hardware ISP face rectangles (normalized 0…1, bottom-left origin) on the video queue, or nil if ISP face detection is inactive.
+    var onFaces: (([CGRect]?) -> Void)?
 
     private let sessionQueue = DispatchQueue(label: "qbt.camera.session")
     private let videoQueue = DispatchQueue(label: "qbt.camera.video", qos: .userInteractive)
     private let output = AVCaptureVideoDataOutput()
+    private let metadataOutput = AVCaptureMetadataOutput()
+    private var videoSize = CGSize.zero
     private var input: AVCaptureDeviceInput?
     private let depthOutput = AVCaptureDepthDataOutput()
     private let depthQueue = DispatchQueue(label: "qbt.camera.depth", qos: .userInteractive)
@@ -45,6 +49,12 @@ final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     private var orientation = VideoOrientation.auto
     private var rotationCoordinator: AVCaptureDevice.RotationCoordinator?
     private var rotationObservation: NSKeyValueObservation?
+    private var pressureObservation: NSKeyValueObservation?
+    /// Frame rate the preset asks for; lowered while the iPhone is under thermal pressure.
+    private var presetFPS = 30
+    private let frameClock = NSLock()
+    private var lastFrameTime = CACurrentMediaTime()
+    private var lastRestart = 0.0
 
     override init() {
         super.init()
@@ -56,6 +66,10 @@ final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         session.automaticallyConfiguresApplicationAudioSession = false
         NotificationCenter.default.addObserver(self, selector: #selector(sessionRuntimeError),
                                                name: AVCaptureSession.runtimeErrorNotification, object: session)
+        // A phone call, Siri or another app taking the camera interrupts the session; when that's over,
+        // pick up again instead of staying frozen.
+        NotificationCenter.default.addObserver(self, selector: #selector(sessionInterruptionEnded),
+                                               name: AVCaptureSession.interruptionEndedNotification, object: session)
     }
 
     /// Applies camera/quality/orientation and starts the session; safe to call again to reconfigure.
@@ -150,6 +164,47 @@ final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         }
     }
 
+    @objc private func sessionInterruptionEnded() {
+        sessionQueue.async { [self] in
+            if !session.isRunning && input != nil { session.startRunning() }
+        }
+    }
+
+    /// Called about once a second while streaming: if no frame arrived for a while although the camera
+    /// should be running (thermal shutdown, a stuck session), restart it.
+    func ensureRunning() {
+        sessionQueue.async { [self] in
+            guard input != nil, !session.isInterrupted else { return }
+            let now = CACurrentMediaTime()
+            let silent = now - frameClock.withLock { lastFrameTime }
+            guard !session.isRunning || silent > 3, now - lastRestart > 5 else { return }
+            lastRestart = now
+            print("QBT: camera silent for \(Int(silent)) s, restarting")
+            if session.isRunning { session.stopRunning() }
+            session.startRunning()
+            frameClock.withLock { lastFrameTime = now }
+        }
+    }
+
+    /// Hot iPhone: drop the frame rate before iOS has to stop the camera ("system pressure").
+    private func applyPressure(_ device: AVCaptureDevice) {
+        let level = device.systemPressureState.level
+        let fps: Int
+        switch level {
+        case .critical, .shutdown: fps = min(presetFPS, 15)
+        case .serious: fps = min(presetFPS, 20)
+        default: fps = presetFPS
+        }
+        guard device.activeFormat.videoSupportedFrameRateRanges.contains(where: {
+            $0.minFrameRate <= Double(fps) && Double(fps) <= $0.maxFrameRate
+        }), (try? device.lockForConfiguration()) != nil else { return }
+        let duration = CMTime(value: 1, timescale: CMTimeScale(fps))
+        device.activeVideoMinFrameDuration = duration
+        device.activeVideoMaxFrameDuration = duration
+        device.unlockForConfiguration()
+        print("QBT: system pressure \(level.rawValue), \(fps) fps")
+    }
+
     @objc private func sessionRuntimeError() {
         sessionQueue.asyncAfter(deadline: .now() + 0.5) { [self] in
             if !session.isRunning { session.startRunning() }
@@ -185,6 +240,10 @@ final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             guard session.canAddOutput(output) else { throw CaptureError.cannotAddOutput }
             session.addOutput(output)
         }
+        if !session.outputs.contains(metadataOutput), session.canAddOutput(metadataOutput) {
+            session.addOutput(metadataOutput)
+            metadataOutput.setMetadataObjectsDelegate(self, queue: videoQueue)
+        }
         if depth {
             if !session.outputs.contains(depthOutput), session.canAddOutput(depthOutput) {
                 session.addOutput(depthOutput)
@@ -197,6 +256,10 @@ final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             depthQueue.async { [weak self] in self?.onDepth?(nil) }
         }
         try applyFormat(preset, to: device, depth: depth)
+        presetFPS = preset.fps
+        pressureObservation = device.observe(\.systemPressureState, options: [.new]) { [weak self] device, _ in
+            self?.sessionQueue.async { self?.applyPressure(device) }
+        }
 
         if let connection = output.connection(with: .video) {
             // Stabilization buffers 1–3 frames: bad for latency.
@@ -206,6 +269,15 @@ final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
                 connection.automaticallyAdjustsVideoMirroring = false
                 connection.isVideoMirrored = false
             }
+        }
+        if session.outputs.contains(metadataOutput), metadataOutput.availableMetadataObjectTypes.contains(.face) {
+            metadataOutput.metadataObjectTypes = [.face]
+            videoQueue.async { [weak self] in self?.onFaces?([]) }
+        } else {
+            if session.outputs.contains(metadataOutput) {
+                metadataOutput.metadataObjectTypes = []
+            }
+            videoQueue.async { [weak self] in self?.onFaces?(nil) }
         }
         trackRotation(of: device)
     }
@@ -263,16 +335,20 @@ final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     }
 
     private func trackRotation(of device: AVCaptureDevice) {
-        rotationObservation?.invalidate()
-        let coordinator = AVCaptureDevice.RotationCoordinator(device: device, previewLayer: nil)
-        rotationCoordinator = coordinator
-        applyRotation(orientation.fixedAngle ?? coordinator.videoRotationAngleForHorizonLevelCapture)
-        rotationObservation = coordinator.observe(\.videoRotationAngleForHorizonLevelCapture, options: [.new]) { [weak self] coordinator, _ in
-            let angle = coordinator.videoRotationAngleForHorizonLevelCapture
-            self?.sessionQueue.async {
-                guard let self, self.orientation.fixedAngle == nil else { return }
-                self.applyRotation(angle)
+        if rotationCoordinator?.device !== device {
+            rotationObservation?.invalidate()
+            let coordinator = AVCaptureDevice.RotationCoordinator(device: device, previewLayer: nil)
+            rotationCoordinator = coordinator
+            rotationObservation = coordinator.observe(\.videoRotationAngleForHorizonLevelCapture, options: [.new]) { [weak self] coordinator, _ in
+                let angle = coordinator.videoRotationAngleForHorizonLevelCapture
+                self?.sessionQueue.async {
+                    guard let self, self.orientation.fixedAngle == nil else { return }
+                    self.applyRotation(angle)
+                }
             }
+        }
+        if let coordinator = rotationCoordinator {
+            applyRotation(orientation.fixedAngle ?? coordinator.videoRotationAngleForHorizonLevelCapture)
         }
     }
 
@@ -289,12 +365,42 @@ final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         onDepth?(depthData)
     }
 
+    func metadataOutput(_ output: AVCaptureMetadataOutput, didOutput metadataObjects: [AVMetadataObject],
+                        from connection: AVCaptureConnection) {
+        guard videoSize.width > 0, videoSize.height > 0,
+              let videoConnection = self.output.connection(with: .video) else { return }
+        var rects: [CGRect] = []
+        for object in metadataObjects where object.type == .face {
+            guard let transformed = self.output.transformedMetadataObject(for: object, connection: videoConnection) else { continue }
+            let b = transformed.bounds
+            let norm: CGRect
+            if b.width > 1.0 || b.height > 1.0 || b.minX > 1.0 || b.minY > 1.0 {
+                norm = CGRect(x: b.minX / videoSize.width,
+                              y: 1.0 - (b.maxY / videoSize.height),
+                              width: b.width / videoSize.width,
+                              height: b.height / videoSize.height)
+            } else {
+                norm = CGRect(x: b.minX,
+                              y: 1.0 - b.maxY,
+                              width: b.width,
+                              height: b.height)
+            }
+            let clamped = norm.intersection(CGRect(x: 0, y: 0, width: 1, height: 1))
+            if !clamped.isNull, clamped.width > 0.01, clamped.height > 0.01 {
+                rects.append(clamped)
+            }
+        }
+        onFaces?(rects)
+    }
+
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
         if output === audioOutput {
             onAudio?(sampleBuffer)
             return
         }
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+        videoSize = CGSize(width: CVPixelBufferGetWidth(pixelBuffer), height: CVPixelBufferGetHeight(pixelBuffer))
+        frameClock.withLock { lastFrameTime = CACurrentMediaTime() }
         onFrame?(pixelBuffer, CMSampleBufferGetPresentationTimeStamp(sampleBuffer))
     }
 }

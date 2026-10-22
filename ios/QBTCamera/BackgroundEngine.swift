@@ -207,14 +207,18 @@ final class BackgroundEngine {
                                                            arguments: [halfImage, coefficientMeans, halfCoarse, previousImage, keep])
         else { return nil }
 
-        // Render the matte so the next frame can blend with it. Queued without waiting: the final
-        // render runs on the same GPU queue right after it.
+        // Render the matte so the next frame can blend with it. Wait for completion before releasing
+        // the old `previousMatte` back into `mattePool` so it is never overwritten while still being read.
         let upscale = CGAffineTransform(scaleX: extent.width / half.width, y: extent.height / half.height)
         guard let buffer = makeMatteBuffer(size: half.size) else { return refined.transformed(by: upscale) }
         let destination = CIRenderDestination(pixelBuffer: buffer)
         destination.colorSpace = nil
-        guard (try? context.startTask(toRender: refined, to: destination)) != nil else {
+        let oldMatte = previousMatte
+        guard let task = try? context.startTask(toRender: refined, to: destination) else {
             return refined.transformed(by: upscale)
+        }
+        withExtendedLifetime(oldMatte) {
+            _ = try? task.waitUntilCompleted()
         }
         previousMatte = buffer
         return CIImage(cvPixelBuffer: buffer, options: [.colorSpace: NSNull()]).transformed(by: upscale).cropped(to: extent)
